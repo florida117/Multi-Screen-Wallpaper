@@ -61,7 +61,7 @@ struct ContentView: View {
             }
             Spacer()
             if manager.sourceImage != nil {
-                Text("Drag the split line to adjust · ⌘↩ to apply")
+                Text("Drag split lines to adjust · ⌘↩ to apply")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

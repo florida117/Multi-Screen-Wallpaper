@@ -3,7 +3,7 @@ import CoreImage
 
 final class WallpaperManager: ObservableObject {
     @Published var sourceImage: NSImage?
-    @Published var splitFraction: CGFloat = 0.5
+    @Published var splitFractions: [CGFloat] = [0.5]
     @Published var statusMessage: String = ""
     @Published var isError: Bool = false
 
@@ -17,7 +17,7 @@ final class WallpaperManager: ObservableObject {
         }
         sourceImage = image
         sourceURL = url
-        splitFraction = 0.5
+        resetFractions()
         setStatus("Loaded: \(url.lastPathComponent)", error: false)
     }
 
@@ -30,42 +30,41 @@ final class WallpaperManager: ObservableObject {
             return
         }
 
-        let fraction = splitFraction
-        let screen0  = screens[0]
-        let screen1  = screens[1]
-        let label    = "\(screen0.localizedName) and \(screen1.localizedName)"
+        // If the screen count changed since the image was loaded, re-space the cuts evenly.
+        var fractions = splitFractions
+        if fractions.count != screens.count - 1 {
+            fractions = evenFractions(for: screens.count)
+        }
+
+        let cuts: [CGFloat] = [0] + fractions.sorted() + [1]
         let opts: [NSWorkspace.DesktopImageOptionKey: Any] = [
             .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
-            .allowClipping: false
+            .allowClipping: true
         ]
+        let count = screens.count
+        let base  = url.deletingPathExtension().lastPathComponent
 
         DispatchQueue.global(qos: .default).async {
             do {
-                // CIImage is thread-safe. .applyOrientationProperty corrects JPEG/HEIC
-                // images that store rotation in EXIF metadata rather than pixel data.
                 guard let ci = CIImage(contentsOf: url,
                                        options: [.applyOrientationProperty: true])
                 else { throw WallpaperError.renderFailed }
 
-                let ext      = ci.extent
-                let leftSrc  = CGRect(x: ext.minX,
-                                      y: ext.minY,
-                                      width:  ext.width * fraction,
-                                      height: ext.height)
-                let rightSrc = CGRect(x: ext.minX + ext.width * fraction,
-                                      y: ext.minY,
-                                      width:  ext.width * (1 - fraction),
-                                      height: ext.height)
+                let ext = ci.extent
+                let ws  = NSWorkspace.shared
 
-                let base     = url.deletingPathExtension().lastPathComponent
-                let leftURL  = try self.cropAndSave(ci: ci, srcRect: leftSrc,  screen: screen0, name: "\(base)_Left.png")
-                let rightURL = try self.cropAndSave(ci: ci, srcRect: rightSrc, screen: screen1, name: "\(base)_Right.png")
+                for (i, screen) in screens.enumerated() {
+                    let x0      = ext.minX + ext.width * cuts[i]
+                    let x1      = ext.minX + ext.width * cuts[i + 1]
+                    let srcRect = CGRect(x: x0, y: ext.minY, width: x1 - x0, height: ext.height)
+                    let name    = "\(base)_Screen\(i + 1).png"
+                    let wURL    = try self.cropAndSave(ci: ci, srcRect: srcRect, screen: screen, name: name)
+                    try ws.setDesktopImageURL(wURL, for: screen, options: opts)
+                }
 
-                let ws = NSWorkspace.shared
-                try ws.setDesktopImageURL(leftURL,  for: screen0, options: opts)
-                try ws.setDesktopImageURL(rightURL, for: screen1, options: opts)
-
-                DispatchQueue.main.async { self.setStatus("Applied to \(label).", error: false) }
+                DispatchQueue.main.async {
+                    self.setStatus("Applied to \(count) display\(count == 1 ? "" : "s").", error: false)
+                }
             } catch {
                 DispatchQueue.main.async { self.setStatus(error.localizedDescription, error: true) }
             }
@@ -73,6 +72,14 @@ final class WallpaperManager: ObservableObject {
     }
 
     // MARK: - Private
+
+    private func resetFractions() {
+        splitFractions = evenFractions(for: max(NSScreen.screens.count, 2))
+    }
+
+    private func evenFractions(for count: Int) -> [CGFloat] {
+        (1..<count).map { CGFloat($0) / CGFloat(count) }
+    }
 
     private func cropAndSave(ci: CIImage, srcRect: CGRect, screen: NSScreen, name: String) throws -> URL {
         let scale        = screen.backingScaleFactor
@@ -94,8 +101,6 @@ final class WallpaperManager: ObservableObject {
                               width: srcRect.width, height: h)
         }
 
-        // Crop → translate to origin → scale to exact screen pixel dimensions.
-        // CIImage operations are lazy; no pixels are touched until writePNGRepresentation.
         let processed = ci
             .cropped(to: cropRect)
             .transformed(by: CGAffineTransform(translationX: -cropRect.minX, y: -cropRect.minY))
@@ -104,7 +109,6 @@ final class WallpaperManager: ObservableObject {
 
         let url        = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         let colorSpace = ci.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        // writePNGRepresentation produces a standard top-down PNG with no manual flip needed.
         try ciContext.writePNGRepresentation(of: processed, to: url,
                                              format: .RGBA8, colorSpace: colorSpace)
         return url
