@@ -107,7 +107,12 @@ final class WallpaperManager: ObservableObject {
             .transformed(by: CGAffineTransform(scaleX: pixelW / cropRect.width,
                                                y:      pixelH / cropRect.height))
 
-        let url        = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        let appSupport = try FileManager.default.url(for: .applicationSupportDirectory,
+                                                       in: .userDomainMask,
+                                                       appropriateFor: nil, create: true)
+        let storageDir = appSupport.appendingPathComponent("MultiScreenWallpaper", isDirectory: true)
+        try FileManager.default.createDirectory(at: storageDir, withIntermediateDirectories: true)
+        let url        = storageDir.appendingPathComponent(name)
         let colorSpace = ci.colorSpace ?? CGColorSpaceCreateDeviceRGB()
         try ciContext.writePNGRepresentation(of: processed, to: url,
                                              format: .RGBA8, colorSpace: colorSpace)

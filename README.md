@@ -1,4 +1,4 @@
-# Dual Screen Wallpaper
+# Multi Screen Wallpaper
 
 A native Apple Silicon Mac app that spans a panoramic image across multiple displays — a modern, arm64-native replacement for [Fresco](https://apps.apple.com/gb/app/fresco/id1251572132?mt=12), which was never updated for Apple Silicon.
 
@@ -45,7 +45,7 @@ Output files are named `<OriginalFilename>_Screen1.png`, `<OriginalFilename>_Scr
 
 | File | Role |
 |---|---|
-| `DualScreenWallpaperApp.swift` | App entry point, window configuration |
+| `MultiScreenWallpaperApp.swift` | App entry point, window configuration |
 | `ContentView.swift` | Main SwiftUI layout — toolbar, canvas, status bar |
 | `CanvasNSView.swift` | Interactive NSView canvas — image preview, draggable split lines, drag-and-drop |
 | `WallpaperManager.swift` | State and logic — image loading, cropping, wallpaper application |
@@ -61,7 +61,7 @@ Output files are named `<OriginalFilename>_Screen1.png`, `<OriginalFilename>_Scr
 ## Building
 
 ```bash
-open DualScreenWallpaper.xcodeproj
+open MultiScreenWallpaper.xcodeproj
 ```
 
 Set your Development Team in **Signing & Capabilities**, then build with **⌘B**.

@@ -31,7 +31,7 @@ struct ContentView: View {
 
     private var toolbar: some View {
         HStack(spacing: 12) {
-            Text("Dual Screen Wallpaper")
+            Text("Multi Screen Wallpaper")
                 .font(.headline)
             Spacer()
             Button("Open Image…") { showFilePicker = true }
