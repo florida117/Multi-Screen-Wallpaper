@@ -67,3 +67,60 @@ open MultiScreenWallpaper.xcodeproj
 Set your Development Team in **Signing & Capabilities**, then build with **⌘B**.
 
 No third-party dependencies — only AppKit, SwiftUI, and CoreImage from the macOS SDK.
+
+## Distribution
+
+The app is distributed as a notarized DMG for direct installation — no App Store required.
+
+### Requirements
+
+- Paid Apple Developer Program membership
+- A **Developer ID Application** certificate (create in Xcode → Settings → Accounts → Manage Certificates)
+
+### Steps
+
+**1. Archive**
+
+In Xcode, select **Product → Archive**. Once complete the Organizer window opens.
+
+**2. Export**
+
+In Organizer, select the archive and click **Distribute App → Direct Distribution**. Accept the defaults — Xcode will sign, notarize, and staple automatically. Save the exported `.app` to a convenient location (e.g. Desktop).
+
+**3. Package as DMG**
+
+```bash
+brew install create-dmg imagemagick
+
+# Create arrow background
+magick -size 540x380 \
+  gradient:"#e8e8e8-#f5f5f5" \
+  -fill none -stroke "#999999" -strokewidth 3 \
+  -draw "path 'M 220,190 L 320,190'" \
+  -fill "#999999" -stroke none \
+  -draw "polygon 320,183 335,190 320,197" \
+  /tmp/dmg-background.png
+
+# Build DMG
+create-dmg \
+  --volname "Multi Screen Wallpaper" \
+  --background /tmp/dmg-background.png \
+  --window-pos 200 120 \
+  --window-size 540 380 \
+  --icon-size 100 \
+  --icon "MultiScreenWallpaper.app" 130 185 \
+  --app-drop-link 410 185 \
+  --hide-extension "MultiScreenWallpaper.app" \
+  ~/Desktop/MultiScreenWallpaper.dmg \
+  /path/to/MultiScreenWallpaper.app
+
+brew uninstall create-dmg imagemagick
+```
+
+The resulting `MultiScreenWallpaper.dmg` can be shared directly (AirDrop, USB, etc.). Recipients open the DMG, drag the app to Applications, and launch — no security warnings.
+
+### Key distribution decisions
+
+- **Developer ID signed** — allows distribution outside the Mac App Store
+- **Notarized** — passes Gatekeeper on recipients' Macs without any security prompts
+- **Not sandboxed** — required for `NSWorkspace.setDesktopImageURL` to work; precludes Mac App Store distribution
