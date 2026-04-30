@@ -1,12 +1,15 @@
 # Multi Screen Wallpaper
 
-A native Apple Silicon Mac app that spans a panoramic image across multiple displays — a modern, arm64-native replacement for [Fresco](https://apps.apple.com/gb/app/fresco/id1251572132?mt=12), which was never updated for Apple Silicon.
+A native Apple Silicon Mac app that spans a panoramic image across multiple displays.
+
+## Installation
+
+Download the latest `.dmg` from the [Releases](../../releases) page, open it, and drag **MultiScreenWallpaper** to your Applications folder. No Xcode or build steps required.
 
 ## Requirements
 
 - macOS 13 Ventura or later
 - Apple Silicon Mac (arm64)
-- Xcode 15 or later (to build)
 
 ## Features
 
