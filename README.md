@@ -4,7 +4,7 @@ A native Apple Silicon Mac app that spans a panoramic image across multiple disp
 
 ## Installation
 
-Download the latest `.dmg` from the [Releases](../../releases) page, open it, and drag **MultiScreenWallpaper** to your Applications folder. No Xcode or build steps required.
+Download the latest `.dmg` from the [Releases](../../releases) page, open it, and drag **MultiScreenWallpaper** to your Applications folder.
 
 ## Requirements
 
