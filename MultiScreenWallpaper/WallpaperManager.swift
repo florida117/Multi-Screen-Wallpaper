@@ -10,6 +10,11 @@ final class WallpaperManager: ObservableObject {
     private var sourceURL: URL?
     private let ciContext = CIContext()
 
+    private let wallpaperOpts: [NSWorkspace.DesktopImageOptionKey: Any] = [
+        .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
+        .allowClipping: true
+    ]
+
     func loadImage(from url: URL) {
         guard let image = NSImage(contentsOf: url) else {
             setStatus("Failed to open image.", error: true)
@@ -37,10 +42,6 @@ final class WallpaperManager: ObservableObject {
         }
 
         let cuts: [CGFloat] = [0] + fractions.sorted() + [1]
-        let opts: [NSWorkspace.DesktopImageOptionKey: Any] = [
-            .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
-            .allowClipping: true
-        ]
         let count = screens.count
         let base  = url.deletingPathExtension().lastPathComponent
 
@@ -51,19 +52,30 @@ final class WallpaperManager: ObservableObject {
                 else { throw WallpaperError.renderFailed }
 
                 let ext = ci.extent
-                let ws  = NSWorkspace.shared
+                let storageDir = try self.wallpaperStorageDirectory()
+                var renderedWallpapers: [(screen: NSScreen, url: URL)] = []
 
                 for (i, screen) in screens.enumerated() {
                     let x0      = ext.minX + ext.width * cuts[i]
                     let x1      = ext.minX + ext.width * cuts[i + 1]
                     let srcRect = CGRect(x: x0, y: ext.minY, width: x1 - x0, height: ext.height)
                     let name    = "\(base)_Screen\(i + 1).png"
-                    let wURL    = try self.cropAndSave(ci: ci, srcRect: srcRect, screen: screen, name: name)
-                    try ws.setDesktopImageURL(wURL, for: screen, options: opts)
+                    let wURL    = try self.cropAndSave(ci: ci, srcRect: srcRect, screen: screen, name: name, storageDir: storageDir)
+                    renderedWallpapers.append((screen: screen, url: wURL))
                 }
 
                 DispatchQueue.main.async {
-                    self.setStatus("Applied to \(count) display\(count == 1 ? "" : "s").", error: false)
+                    do {
+                        let ws = NSWorkspace.shared
+                        for wallpaper in renderedWallpapers {
+                            try ws.setDesktopImageURL(wallpaper.url, for: wallpaper.screen, options: self.wallpaperOpts)
+                        }
+                        try self.removeGeneratedWallpapers(in: storageDir,
+                                                           keeping: Set(renderedWallpapers.map(\.url.lastPathComponent)))
+                        self.setStatus("Applied to \(count) display\(count == 1 ? "" : "s").", error: false)
+                    } catch {
+                        self.setStatus(error.localizedDescription, error: true)
+                    }
                 }
             } catch {
                 DispatchQueue.main.async { self.setStatus(error.localizedDescription, error: true) }
@@ -81,7 +93,7 @@ final class WallpaperManager: ObservableObject {
         (1..<count).map { CGFloat($0) / CGFloat(count) }
     }
 
-    private func cropAndSave(ci: CIImage, srcRect: CGRect, screen: NSScreen, name: String) throws -> URL {
+    private func cropAndSave(ci: CIImage, srcRect: CGRect, screen: NSScreen, name: String, storageDir: URL) throws -> URL {
         let scale        = screen.backingScaleFactor
         let pixelW       = screen.frame.width  * scale
         let pixelH       = screen.frame.height * scale
@@ -107,16 +119,33 @@ final class WallpaperManager: ObservableObject {
             .transformed(by: CGAffineTransform(scaleX: pixelW / cropRect.width,
                                                y:      pixelH / cropRect.height))
 
-        let appSupport = try FileManager.default.url(for: .applicationSupportDirectory,
-                                                       in: .userDomainMask,
-                                                       appropriateFor: nil, create: true)
-        let storageDir = appSupport.appendingPathComponent("MultiScreenWallpaper", isDirectory: true)
-        try FileManager.default.createDirectory(at: storageDir, withIntermediateDirectories: true)
         let url        = storageDir.appendingPathComponent(name)
         let colorSpace = ci.colorSpace ?? CGColorSpaceCreateDeviceRGB()
         try ciContext.writePNGRepresentation(of: processed, to: url,
-                                             format: .RGBA8, colorSpace: colorSpace)
+                                             format: .RGBA8, colorSpace: colorSpace,
+                                             options: [:])
         return url
+    }
+
+    private func wallpaperStorageDirectory() throws -> URL {
+        let appSupport = try FileManager.default.url(for: .applicationSupportDirectory,
+                                                     in: .userDomainMask,
+                                                     appropriateFor: nil, create: true)
+        let storageDir = appSupport.appendingPathComponent("MultiScreenWallpaper", isDirectory: true)
+        try FileManager.default.createDirectory(at: storageDir, withIntermediateDirectories: true)
+        return storageDir
+    }
+
+    private func removeGeneratedWallpapers(in storageDir: URL, keeping filenamesToKeep: Set<String>) throws {
+        let fileManager = FileManager.default
+        let urls = try fileManager.contentsOfDirectory(at: storageDir,
+                                                       includingPropertiesForKeys: nil,
+                                                       options: [.skipsHiddenFiles])
+        for url in urls
+        where ["png", "heic"].contains(url.pathExtension.lowercased())
+            && !filenamesToKeep.contains(url.lastPathComponent) {
+            try fileManager.removeItem(at: url)
+        }
     }
 
     private func setStatus(_ msg: String, error: Bool) {

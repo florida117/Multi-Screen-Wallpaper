@@ -36,10 +36,11 @@ All image processing runs on a background thread to keep the UI responsive:
 2. For each screen, the corresponding horizontal slice of the image is extracted
 3. Each slice is center-cropped to that screen's exact pixel aspect ratio
 4. The result is scaled to the screen's native pixel dimensions
-5. The processed image is written to a PNG in the system temp directory
+5. The processed image is written to a PNG in the app's Application Support directory
 6. `NSWorkspace.setDesktopImageURL(_:for:options:)` applies it per display
 
 Output files are named `<OriginalFilename>_Screen1.png`, `<OriginalFilename>_Screen2.png`, etc.
+Previously generated wallpaper files are cleaned up after each successful apply.
 
 ### Architecture
 
@@ -55,7 +56,7 @@ Output files are named `<OriginalFilename>_Screen1.png`, `<OriginalFilename>_Scr
 - **Not sandboxed** — required for `NSWorkspace.setDesktopImageURL` to apply wallpapers reliably
 - **Hardened Runtime enabled** — required for distribution
 - **`CIImage` pipeline** — thread-safe, GPU-accelerated, produces correctly-oriented PNGs without manual coordinate flipping
-- **`DispatchQueue.global(qos: .default)`** — matches the QoS of the window server's XPC service, avoiding priority inversion warnings
+- **Background render, main-thread apply** — image processing stays off the UI thread, while the AppKit wallpaper API is called on the main thread
 - **`CGImage.cropping(to:)`** — zero-copy crop (adjusts pixel offset only); the only real work is the final scale pass
 
 ## Building
