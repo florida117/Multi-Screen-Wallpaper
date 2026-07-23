@@ -13,6 +13,12 @@ struct MultiScreenWallpaperApp: App {
         .defaultSize(width: 960, height: 580)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            CommandGroup(after: .newItem) {
+                Button("Open Image…") {
+                    NotificationCenter.default.post(name: .openImageRequested, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: .command)
+            }
         }
     }
 }
