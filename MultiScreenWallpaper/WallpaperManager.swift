@@ -3,9 +3,10 @@ import CoreImage
 
 final class WallpaperManager: ObservableObject {
     @Published var sourceImage: NSImage?
-    @Published var splitFractions: [CGFloat] = [0.5]
+    @Published var splitFractions: [CGFloat] = []
     @Published var statusMessage: String = ""
     @Published var isError: Bool = false
+    @Published private(set) var displayCount: Int = NSScreen.screens.count
 
     private var sourceURL: URL?
     private let ciContext = CIContext()
@@ -15,11 +16,38 @@ final class WallpaperManager: ObservableObject {
         .allowClipping: true
     ]
 
+    init() {
+        splitFractions = evenFractions(for: displayCount)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screensChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    /// Displays were connected, disconnected, or reconfigured. Refresh the
+    /// display count (drives the status bar) and re-space the split lines so
+    /// the canvas and labels reflect the new arrangement.
+    @objc private func screensChanged() {
+        displayCount = NSScreen.screens.count
+        if splitFractions.count != displayCount - 1 {
+            splitFractions = evenFractions(for: displayCount)
+        }
+    }
+
     func loadImage(from url: URL) {
-        guard let image = NSImage(contentsOf: url) else {
+        // Use the same CIImage pipeline as apply so the preview honours EXIF
+        // orientation exactly as the generated wallpaper will.
+        guard let ci = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else {
             setStatus("Failed to open image.", error: true)
             return
         }
+        let rep = NSCIImageRep(ciImage: ci)
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+
         sourceImage = image
         sourceURL = url
         resetFractions()
@@ -30,8 +58,8 @@ final class WallpaperManager: ObservableObject {
         guard let url = sourceURL else { return }
 
         let screens = NSScreen.screens.sorted { $0.frame.minX < $1.frame.minX }
-        guard screens.count >= 2 else {
-            setStatus("Only \(screens.count) display detected. Connect a second display.", error: true)
+        guard !screens.isEmpty else {
+            setStatus("No displays detected.", error: true)
             return
         }
 
@@ -86,7 +114,7 @@ final class WallpaperManager: ObservableObject {
     // MARK: - Private
 
     private func resetFractions() {
-        splitFractions = evenFractions(for: max(NSScreen.screens.count, 2))
+        splitFractions = evenFractions(for: max(NSScreen.screens.count, 1))
     }
 
     private func evenFractions(for count: Int) -> [CGFloat] {
@@ -137,6 +165,8 @@ final class WallpaperManager: ObservableObject {
     }
 
     private func removeGeneratedWallpapers(in storageDir: URL, keeping filenamesToKeep: Set<String>) throws {
+        // storageDir is the app's own Application Support subdirectory, so every
+        // png/heic here was written by a previous apply and is safe to prune.
         let fileManager = FileManager.default
         let urls = try fileManager.contentsOfDirectory(at: storageDir,
                                                        includingPropertiesForKeys: nil,
