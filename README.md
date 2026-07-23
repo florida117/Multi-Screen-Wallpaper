@@ -13,9 +13,11 @@ Download the latest `.dmg` from the [Releases](../../releases) page, open it, an
 
 ## Features
 
-- **Panorama spanning** — load a single wide image and distribute it across two or more displays
+- **Panorama spanning** — load a single wide image and distribute it across one or more displays
 - **Draggable split lines** — adjust exactly where the image is divided between screens with N−1 interactive split lines for N displays
 - **Per-screen center crop** — each display's slice is independently cropped to that screen's exact aspect ratio from the centre, so every screen gets a clean fill regardless of resolution or size differences
+- **Live crop preview** — the canvas dims the margins each screen will trim, so what you see in the preview is exactly what lands on the wall
+- **Live display tracking** — connecting, disconnecting, or rotating a display updates the split lines, labels, and crop preview immediately
 - **Multi-display support** — works with any number of connected displays, including mixed resolutions and sizes
 - **Drag and drop** — drag an image directly onto the canvas, or use ⌘O to open
 - **Fill Screen mode** — wallpapers are applied using macOS Fill Screen scaling
@@ -35,9 +37,9 @@ Download the latest `.dmg` from the [Releases](../../releases) page, open it, an
 
 All image processing runs on a background thread to keep the UI responsive:
 
-1. The source image is loaded via `CIImage` with EXIF orientation applied
+1. The source image is loaded via `CIImage` with EXIF orientation applied — the on-screen preview uses the same pipeline, so it matches the applied result exactly
 2. For each screen, the corresponding horizontal slice of the image is extracted
-3. Each slice is center-cropped to that screen's exact pixel aspect ratio
+3. Each slice is center-cropped to that screen's exact pixel aspect ratio; the canvas previews this by dimming the margins that will be trimmed
 4. The result is scaled to the screen's native pixel dimensions
 5. The processed image is written to a PNG in the app's Application Support directory
 6. `NSWorkspace.setDesktopImageURL(_:for:options:)` applies it per display

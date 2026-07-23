@@ -28,12 +28,29 @@ final class CanvasNSView: NSView {
         self.manager = manager
         super.init(frame: .zero)
         registerForDraggedTypes([.fileURL])
+        observeScreenChanges()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         registerForDraggedTypes([.fileURL])
+        observeScreenChanges()
     }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    // Redraw when displays are reconfigured (e.g. a screen is rotated) so the
+    // per-section crop preview reflects each screen's current aspect ratio,
+    // even when the number of displays — and thus the split lines — is unchanged.
+    private func observeScreenChanges() {
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screensChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
+
+    @objc private func screensChanged() { needsDisplay = true }
 
     // MARK: Drawing
 
@@ -51,7 +68,51 @@ final class CanvasNSView: NSView {
 
         let drawRect = aspectFit(size: image.size, in: bounds)
         image.draw(in: drawRect, from: .zero, operation: .copy, fraction: 1.0)
+        drawCropDimming(in: drawRect)
         drawSplitLines(in: drawRect)
+    }
+
+    /// Dim the parts of each section that will be cropped away, so the preview
+    /// shows exactly what lands on each display. Each section is center-cropped
+    /// to its screen's aspect ratio — mirroring `WallpaperManager.cropAndSave`.
+    private func drawCropDimming(in drawRect: NSRect) {
+        guard let mgr = manager else { return }
+        let cuts: [CGFloat] = [0] + mgr.splitFractions + [1]
+        let screens = NSScreen.screens.sorted { $0.frame.minX < $1.frame.minX }
+
+        NSColor.black.withAlphaComponent(0.55).setFill()
+        for i in 0..<cuts.count - 1 {
+            guard i < screens.count else { continue }
+            let xL = xPosition(for: cuts[i], in: drawRect)
+            let xR = xPosition(for: cuts[i + 1], in: drawRect)
+            let band = NSRect(x: xL, y: drawRect.minY, width: xR - xL, height: drawRect.height)
+
+            // Screen aspect is scale-independent (backing factor cancels).
+            let f = screens[i].frame
+            let kept = centerCrop(band, toAspect: f.width / f.height)
+
+            if kept.width < band.width {
+                NSRect(x: band.minX, y: band.minY,
+                       width: kept.minX - band.minX, height: band.height).fill()
+                NSRect(x: kept.maxX, y: band.minY,
+                       width: band.maxX - kept.maxX, height: band.height).fill()
+            } else if kept.height < band.height {
+                NSRect(x: band.minX, y: band.minY,
+                       width: band.width, height: kept.minY - band.minY).fill()
+                NSRect(x: band.minX, y: kept.maxY,
+                       width: band.width, height: band.maxY - kept.maxY).fill()
+            }
+        }
+    }
+
+    private func centerCrop(_ rect: NSRect, toAspect targetAspect: CGFloat) -> NSRect {
+        if rect.width / rect.height > targetAspect {
+            let w = rect.height * targetAspect
+            return NSRect(x: rect.midX - w / 2, y: rect.minY, width: w, height: rect.height)
+        } else {
+            let h = rect.width / targetAspect
+            return NSRect(x: rect.minX, y: rect.midY - h / 2, width: rect.width, height: h)
+        }
     }
 
     private func drawDropHint() {
@@ -119,11 +180,11 @@ final class CanvasNSView: NSView {
     // MARK: Mouse — drag split lines
 
     override func mouseDown(with event: NSEvent) {
-        guard let mgr = manager, mgr.sourceImage != nil else { return }
+        guard let mgr = manager, mgr.sourceImage != nil,
+              let drawRect = imageDrawRect() else { return }
         let pt = convert(event.locationInWindow, from: nil)
         draggingIndex = nil
         for (i, fraction) in mgr.splitFractions.enumerated() {
-            guard let drawRect = imageDrawRect() else { break }
             if abs(pt.x - xPosition(for: fraction, in: drawRect)) < 16 {
                 draggingIndex = i
                 break

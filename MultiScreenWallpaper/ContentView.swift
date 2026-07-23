@@ -31,8 +31,6 @@ struct ContentView: View {
 
     private var toolbar: some View {
         HStack(spacing: 12) {
-//            Text("Multi Screen Wallpaper")
-//                .font(.headline)
             Spacer()
             Button("Open Image…") { showFilePicker = true }
                 .keyboardShortcut("o")
@@ -49,7 +47,7 @@ struct ContentView: View {
     private var statusBar: some View {
         HStack {
             if manager.statusMessage.isEmpty {
-                let count = NSScreen.screens.count
+                let count = manager.displayCount
                 Text("\(count) display\(count == 1 ? "" : "s") detected")
                     .font(.caption)
                     .foregroundColor(.secondary)
