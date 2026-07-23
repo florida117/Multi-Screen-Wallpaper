@@ -11,3 +11,7 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# Swift Package Manager (GeometryPackage tests)
+.build/
+.swiftpm/

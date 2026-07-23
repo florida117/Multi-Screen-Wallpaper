@@ -11,6 +11,7 @@
 		BB000002000000000000000A /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000000A /* ContentView.swift */; };
 		BB000003000000000000000A /* WallpaperManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000003000000000000000A /* WallpaperManager.swift */; };
 		BB000004000000000000000A /* CanvasNSView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000004000000000000000A /* CanvasNSView.swift */; };
+		BB000006000000000000000A /* WallpaperGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000008000000000000000A /* WallpaperGeometry.swift */; };
 		BB000005000000000000000A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA000006000000000000000A /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -20,6 +21,7 @@
 		AA000002000000000000000A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		AA000003000000000000000A /* WallpaperManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperManager.swift; sourceTree = "<group>"; };
 		AA000004000000000000000A /* CanvasNSView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasNSView.swift; sourceTree = "<group>"; };
+		AA000008000000000000000A /* WallpaperGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperGeometry.swift; sourceTree = "<group>"; };
 		AA000005000000000000000A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA000006000000000000000A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA000007000000000000000A /* MultiScreenWallpaper.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MultiScreenWallpaper.entitlements; sourceTree = "<group>"; };
@@ -59,6 +61,7 @@
 				AA000002000000000000000A /* ContentView.swift */,
 				AA000003000000000000000A /* WallpaperManager.swift */,
 				AA000004000000000000000A /* CanvasNSView.swift */,
+				AA000008000000000000000A /* WallpaperGeometry.swift */,
 				AA000006000000000000000A /* Assets.xcassets */,
 				AA000005000000000000000A /* Info.plist */,
 				AA000007000000000000000A /* MultiScreenWallpaper.entitlements */,
@@ -139,6 +142,7 @@
 				BB000002000000000000000A /* ContentView.swift in Sources */,
 				BB000003000000000000000A /* WallpaperManager.swift in Sources */,
 				BB000004000000000000000A /* CanvasNSView.swift in Sources */,
+				BB000006000000000000000A /* WallpaperGeometry.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -274,7 +278,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = X9RWFR89T3;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -286,7 +290,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.multiscreenwallpaper.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
@@ -306,7 +310,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = X9RWFR89T3;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -318,7 +322,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.multiscreenwallpaper.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;

@@ -1,15 +1,38 @@
 import AppKit
 import CoreImage
 
+/// One display's slot in the panorama, in span order. Consumed by the canvas
+/// for previewing and by apply for rendering.
+struct SpanSlot: Equatable {
+    let name: String
+    let aspect: CGFloat   // width / height, in points (scale-independent)
+    let frame: CGRect     // global frame, for grid proportional mapping
+}
+
 final class WallpaperManager: ObservableObject {
     @Published var sourceImage: NSImage?
-    @Published var splitFractions: [CGFloat] = []
+    @Published var splitFractions: [CGFloat] = [] { didSet { persistFractions() } }
     @Published var statusMessage: String = ""
     @Published var isError: Bool = false
+
+    // Display arrangement, refreshed whenever the screen configuration changes.
     @Published private(set) var displayCount: Int = NSScreen.screens.count
+    @Published private(set) var layout: DisplayLayout = DisplayLayout(arrangement: .row, axis: .horizontal, order: [])
+    @Published private(set) var slots: [SpanSlot] = []
+    @Published private(set) var unionBox: CGRect = .zero
+
+    @Published private(set) var isProcessing: Bool = false
+    @Published var autoReapply: Bool = true { didSet { UserDefaults.standard.set(autoReapply, forKey: Keys.autoReapply) } }
 
     private var sourceURL: URL?
+    private var hasApplied = false
     private let ciContext = CIContext()
+
+    private enum Keys {
+        static let lastImagePath = "lastImagePath"
+        static let splitFractions = "splitFractions"
+        static let autoReapply = "autoReapply"
+    }
 
     private let wallpaperOpts: [NSWorkspace.DesktopImageOptionKey: Any] = [
         .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
@@ -17,39 +40,30 @@ final class WallpaperManager: ObservableObject {
     ]
 
     init() {
-        splitFractions = evenFractions(for: displayCount)
+        autoReapply = UserDefaults.standard.object(forKey: Keys.autoReapply) as? Bool ?? true
+        refreshDisplays()
         NotificationCenter.default.addObserver(
             self, selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        restoreLastSession()
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
     }
 
-    /// Displays were connected, disconnected, or reconfigured. Refresh the
-    /// display count (drives the status bar) and re-space the split lines so
-    /// the canvas and labels reflect the new arrangement.
-    @objc private func screensChanged() {
-        displayCount = NSScreen.screens.count
-        if splitFractions.count != displayCount - 1 {
-            splitFractions = evenFractions(for: displayCount)
-        }
-    }
+    // MARK: - Public
 
     func loadImage(from url: URL) {
         // Use the same CIImage pipeline as apply so the preview honours EXIF
         // orientation exactly as the generated wallpaper will.
-        guard let ci = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else {
+        guard let image = previewImage(from: url) else {
             setStatus("Failed to open image.", error: true)
             return
         }
-        let rep = NSCIImageRep(ciImage: ci)
-        let image = NSImage(size: rep.size)
-        image.addRepresentation(rep)
-
         sourceImage = image
         sourceURL = url
+        UserDefaults.standard.set(url.path, forKey: Keys.lastImagePath)
         resetFractions()
         setStatus("Loaded: \(url.lastPathComponent)", error: false)
     }
@@ -57,23 +71,33 @@ final class WallpaperManager: ObservableObject {
     func applyWallpapers() {
         guard let url = sourceURL else { return }
 
-        let screens = NSScreen.screens.sorted { $0.frame.minX < $1.frame.minX }
-        guard !screens.isEmpty else {
+        let screensRaw = NSScreen.screens
+        guard !screensRaw.isEmpty else {
             setStatus("No displays detected.", error: true)
             return
         }
 
-        // If the screen count changed since the image was loaded, re-space the cuts evenly.
-        var fractions = splitFractions
-        if fractions.count != screens.count - 1 {
-            fractions = evenFractions(for: screens.count)
+        let frames = screensRaw.map(\.frame)
+        let layout = WallpaperGeometry.analyzeLayout(frames: frames)
+        let orderedScreens = layout.order.map { screensRaw[$0] }
+        let count = orderedScreens.count
+
+        // Split fractions apply only to a row/column; a grid maps by position.
+        var fractions = splitFractions.sorted()
+        if layout.arrangement == .grid {
+            fractions = []
+        } else if fractions.count != count - 1 {
+            fractions = WallpaperGeometry.evenFractions(count: count)
         }
+        let cuts: [CGFloat] = [0] + fractions + [1]
+        let axis = layout.axis
+        let arrangement = layout.arrangement
+        let union = WallpaperGeometry.unionBox(frames)
+        let base = url.deletingPathExtension().lastPathComponent
 
-        let cuts: [CGFloat] = [0] + fractions.sorted() + [1]
-        let count = screens.count
-        let base  = url.deletingPathExtension().lastPathComponent
+        isProcessing = true
 
-        DispatchQueue.global(qos: .default).async {
+        DispatchQueue.global(qos: .userInitiated).async {
             do {
                 guard let ci = CIImage(contentsOf: url,
                                        options: [.applyOrientationProperty: true])
@@ -83,16 +107,20 @@ final class WallpaperManager: ObservableObject {
                 let storageDir = try self.wallpaperStorageDirectory()
                 var renderedWallpapers: [(screen: NSScreen, url: URL)] = []
 
-                for (i, screen) in screens.enumerated() {
-                    let x0      = ext.minX + ext.width * cuts[i]
-                    let x1      = ext.minX + ext.width * cuts[i + 1]
-                    let srcRect = CGRect(x: x0, y: ext.minY, width: x1 - x0, height: ext.height)
-                    let name    = "\(base)_Screen\(i + 1).png"
-                    let wURL    = try self.cropAndSave(ci: ci, srcRect: srcRect, screen: screen, name: name, storageDir: storageDir)
+                for (i, screen) in orderedScreens.enumerated() {
+                    let srcRect: CGRect
+                    if arrangement == .grid {
+                        srcRect = WallpaperGeometry.proportionalRect(in: ext, screenFrame: screen.frame, unionBox: union)
+                    } else {
+                        srcRect = WallpaperGeometry.sliceRect(in: ext, axis: axis, cuts: cuts, index: i)
+                    }
+                    let name = "\(base)_Screen\(i + 1).png"
+                    let wURL = try self.cropAndSave(ci: ci, srcRect: srcRect, screen: screen, name: name, storageDir: storageDir)
                     renderedWallpapers.append((screen: screen, url: wURL))
                 }
 
                 DispatchQueue.main.async {
+                    defer { self.isProcessing = false }
                     do {
                         let ws = NSWorkspace.shared
                         for wallpaper in renderedWallpapers {
@@ -100,46 +128,104 @@ final class WallpaperManager: ObservableObject {
                         }
                         try self.removeGeneratedWallpapers(in: storageDir,
                                                            keeping: Set(renderedWallpapers.map(\.url.lastPathComponent)))
+                        self.hasApplied = true
                         self.setStatus("Applied to \(count) display\(count == 1 ? "" : "s").", error: false)
                     } catch {
                         self.setStatus(error.localizedDescription, error: true)
                     }
                 }
             } catch {
-                DispatchQueue.main.async { self.setStatus(error.localizedDescription, error: true) }
+                DispatchQueue.main.async {
+                    self.isProcessing = false
+                    self.setStatus(error.localizedDescription, error: true)
+                }
             }
         }
     }
 
-    // MARK: - Private
-
-    private func resetFractions() {
-        splitFractions = evenFractions(for: max(NSScreen.screens.count, 1))
+    /// Reset split lines to an even spacing for the current arrangement.
+    func resetFractions() {
+        if layout.arrangement == .grid {
+            splitFractions = []
+        } else {
+            splitFractions = WallpaperGeometry.evenFractions(count: max(displayCount, 1))
+        }
     }
 
-    private func evenFractions(for count: Int) -> [CGFloat] {
-        (1..<count).map { CGFloat($0) / CGFloat(count) }
+    // MARK: - Display changes
+
+    @objc private func screensChanged() {
+        refreshDisplays()
+        // Keep the split lines consistent with the new arrangement.
+        if layout.arrangement == .grid {
+            if !splitFractions.isEmpty { splitFractions = [] }
+        } else if splitFractions.count != max(displayCount - 1, 0) {
+            splitFractions = WallpaperGeometry.evenFractions(count: max(displayCount, 1))
+        }
+        // macOS drops a spanned wallpaper when displays change; re-apply if asked.
+        if autoReapply, hasApplied, sourceURL != nil {
+            applyWallpapers()
+        }
+    }
+
+    private func refreshDisplays() {
+        let screensRaw = NSScreen.screens
+        let frames = screensRaw.map(\.frame)
+        displayCount = screensRaw.count
+        let l = WallpaperGeometry.analyzeLayout(frames: frames)
+        layout = l
+        unionBox = WallpaperGeometry.unionBox(frames)
+        slots = l.order.map { idx in
+            let s = screensRaw[idx]
+            return SpanSlot(name: s.localizedName,
+                            aspect: s.frame.width / max(s.frame.height, 1),
+                            frame: s.frame)
+        }
+    }
+
+    // MARK: - Persistence
+
+    private func persistFractions() {
+        UserDefaults.standard.set(splitFractions.map(Double.init), forKey: Keys.splitFractions)
+    }
+
+    private func restoreLastSession() {
+        let defaults = UserDefaults.standard
+        guard let path = defaults.string(forKey: Keys.lastImagePath),
+              FileManager.default.fileExists(atPath: path) else { return }
+        let url = URL(fileURLWithPath: path)
+        guard let image = previewImage(from: url) else { return }
+
+        sourceImage = image
+        sourceURL = url
+
+        if layout.arrangement != .grid,
+           let saved = defaults.array(forKey: Keys.splitFractions) as? [Double],
+           saved.count == max(displayCount - 1, 0) {
+            splitFractions = saved.map { CGFloat($0) }
+        } else {
+            resetFractions()
+        }
+        setStatus("Restored: \(url.lastPathComponent)", error: false)
+    }
+
+    // MARK: - Rendering
+
+    private func previewImage(from url: URL) -> NSImage? {
+        guard let ci = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return nil }
+        let rep = NSCIImageRep(ciImage: ci)
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        return image
     }
 
     private func cropAndSave(ci: CIImage, srcRect: CGRect, screen: NSScreen, name: String, storageDir: URL) throws -> URL {
-        let scale        = screen.backingScaleFactor
-        let pixelW       = screen.frame.width  * scale
-        let pixelH       = screen.frame.height * scale
-        let screenAspect = pixelW / pixelH
-        let srcAspect    = srcRect.width / srcRect.height
+        let scale  = screen.backingScaleFactor
+        let pixelW = screen.frame.width  * scale
+        let pixelH = screen.frame.height * scale
 
-        // Center-crop the slice to the screen's exact aspect ratio.
-        let cropRect: CGRect
-        if srcAspect > screenAspect {
-            let w = srcRect.height * screenAspect
-            cropRect = CGRect(x: srcRect.minX + (srcRect.width - w) / 2,
-                              y: srcRect.minY, width: w, height: srcRect.height)
-        } else {
-            let h = srcRect.width / screenAspect
-            cropRect = CGRect(x: srcRect.minX,
-                              y: srcRect.minY + (srcRect.height - h) / 2,
-                              width: srcRect.width, height: h)
-        }
+        // Center-crop the slice to the screen's exact pixel aspect ratio.
+        let cropRect = WallpaperGeometry.centerCrop(srcRect, toAspect: pixelW / pixelH)
 
         let processed = ci
             .cropped(to: cropRect)
@@ -147,10 +233,17 @@ final class WallpaperManager: ObservableObject {
             .transformed(by: CGAffineTransform(scaleX: pixelW / cropRect.width,
                                                y:      pixelH / cropRect.height))
 
-        let url        = storageDir.appendingPathComponent(name)
-        let colorSpace = ci.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        let url = storageDir.appendingPathComponent(name)
+
+        // Preserve wide-gamut (e.g. Display P3) sources at 16-bit to avoid banding;
+        // fall back to 8-bit sRGB-class output otherwise.
+        let sourceColorSpace = ci.colorSpace
+        let wideGamut = sourceColorSpace?.isWideGamutRGB ?? false
+        let colorSpace = sourceColorSpace ?? CGColorSpaceCreateDeviceRGB()
+        let format: CIFormat = wideGamut ? .RGBA16 : .RGBA8
+
         try ciContext.writePNGRepresentation(of: processed, to: url,
-                                             format: .RGBA8, colorSpace: colorSpace,
+                                             format: format, colorSpace: colorSpace,
                                              options: [:])
         return url
     }

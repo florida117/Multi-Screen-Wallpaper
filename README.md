@@ -14,10 +14,15 @@ Download the latest `.dmg` from the [Releases](../../releases) page, open it, an
 ## Features
 
 - **Panorama spanning** — load a single wide image and distribute it across one or more displays
+- **Any arrangement** — horizontal rows, vertical columns, and grids are all handled: rows/columns get draggable split lines, while grids map each display to the image region matching its physical position
 - **Draggable split lines** — adjust exactly where the image is divided between screens with N−1 interactive split lines for N displays
+- **Keyboard & VoiceOver control** — select a split line and nudge it with the arrow keys (⇧ for larger steps); split lines are exposed to VoiceOver as adjustable sliders
 - **Per-screen center crop** — each display's slice is independently cropped to that screen's exact aspect ratio from the centre, so every screen gets a clean fill regardless of resolution or size differences
 - **Live crop preview** — the canvas dims the margins each screen will trim, so what you see in the preview is exactly what lands on the wall
 - **Live display tracking** — connecting, disconnecting, or rotating a display updates the split lines, labels, and crop preview immediately
+- **Reapply on display change** — optionally re-apply the wallpaper automatically when displays are connected, disconnected, or rearranged (macOS drops spanned wallpapers on such changes)
+- **Session restore** — the last image and split positions are remembered across launches
+- **Wide-gamut aware** — Display P3 sources are written at 16-bit to avoid banding
 - **Multi-display support** — works with any number of connected displays, including mixed resolutions and sizes
 - **Drag and drop** — drag an image directly onto the canvas, or use ⌘O to open
 - **Fill Screen mode** — wallpapers are applied using macOS Fill Screen scaling
@@ -38,11 +43,12 @@ Download the latest `.dmg` from the [Releases](../../releases) page, open it, an
 All image processing runs on a background thread to keep the UI responsive:
 
 1. The source image is loaded via `CIImage` with EXIF orientation applied — the on-screen preview uses the same pipeline, so it matches the applied result exactly
-2. For each screen, the corresponding horizontal slice of the image is extracted
-3. Each slice is center-cropped to that screen's exact pixel aspect ratio; the canvas previews this by dimming the margins that will be trimmed
-4. The result is scaled to the screen's native pixel dimensions
-5. The processed image is written to a PNG in the app's Application Support directory
-6. `NSWorkspace.setDesktopImageURL(_:for:options:)` applies it per display
+2. The connected displays are classified as a **row**, **column**, or **grid** (`WallpaperGeometry.analyzeLayout`). Rows and columns divide the image by the split lines; grids map each display to the image region matching its physical position
+3. For each screen, the corresponding slice (or grid cell) of the image is extracted
+4. Each slice is center-cropped to that screen's exact pixel aspect ratio; the canvas previews this by dimming the margins that will be trimmed
+5. The result is scaled to the screen's native pixel dimensions
+6. The processed image is written to a PNG in the app's Application Support directory (16-bit for wide-gamut sources, 8-bit otherwise)
+7. `NSWorkspace.setDesktopImageURL(_:for:options:)` applies it per display
 
 Output files are named `<OriginalFilename>_Screen1.png`, `<OriginalFilename>_Screen2.png`, etc.
 Previously generated wallpaper files are cleaned up after each successful apply.
@@ -53,8 +59,9 @@ Previously generated wallpaper files are cleaned up after each successful apply.
 |---|---|
 | `MultiScreenWallpaperApp.swift` | App entry point, window configuration |
 | `ContentView.swift` | Main SwiftUI layout — toolbar, canvas, status bar |
-| `CanvasNSView.swift` | Interactive NSView canvas — image preview, draggable split lines, drag-and-drop |
-| `WallpaperManager.swift` | State and logic — image loading, cropping, wallpaper application |
+| `CanvasNSView.swift` | Interactive NSView canvas — image preview, draggable split lines, keyboard/VoiceOver control, drag-and-drop |
+| `WallpaperManager.swift` | State and logic — image loading, cropping, wallpaper application, persistence |
+| `WallpaperGeometry.swift` | Pure, AppKit-free geometry — arrangement detection, slicing, cropping (unit-tested) |
 
 ### Key technical decisions
 
@@ -73,6 +80,16 @@ open MultiScreenWallpaper.xcodeproj
 Set your Development Team in **Signing & Capabilities**, then build with **⌘B**.
 
 No third-party dependencies — only AppKit, SwiftUI, and CoreImage from the macOS SDK.
+
+## Testing
+
+The pure geometry (`WallpaperGeometry.swift`) is covered by unit tests in a
+standalone Swift package that symlinks the same source file, so there is a single
+source of truth:
+
+```bash
+cd GeometryPackage && swift test
+```
 
 ## Distribution
 
