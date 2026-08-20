@@ -4,7 +4,18 @@ A native Apple Silicon Mac app that spans a panoramic image across multiple disp
 
 ## Installation
 
-Download the [**latest MultiScreenWallpaper.dmg**](../../releases/latest/download/MultiScreenWallpaper.dmg), open it, and drag **MultiScreenWallpaper** to your Applications folder. See all versions on the [Releases](../../releases) page.
+Download the [**latest MultiScreenWallpaper.dmg**](../../releases/latest/download/MultiScreenWallpaper.dmg) — currently **v1.3** — open it, and drag **MultiScreenWallpaper** to your Applications folder. See all versions on the [Releases](../../releases) page.
+
+The download is Developer ID signed, notarized and stapled, so it opens without security prompts.
+
+## What's new in 1.3
+
+- **Accessibility** — grid arrangements are now navigable under VoiceOver (they previously exposed nothing); split lines report proper slider values and bounds; the canvas honours Increase Contrast, Reduce Transparency and the system text size; every action has a menu command and shortcut; status and display changes are announced
+- **Fixed a launch hang** — restoring the previous session decoded its image on the main thread, so the app could stall before any window appeared when that file lived in a cloud-synced or permission-gated folder
+- **Fixed corrupted wallpapers on display changes** — overlapping applies could clobber each other's output; applies are now coalesced and display-change bursts debounced
+- **Faster preview** — dragging a split line no longer re-renders the full-resolution image on every frame
+
+See the [v1.3 release notes](../../releases/tag/v1.3) for the full list.
 
 ## Requirements
 
