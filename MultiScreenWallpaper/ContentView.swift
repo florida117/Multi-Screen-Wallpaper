@@ -7,16 +7,18 @@ extension Notification.Name {
 }
 
 struct ContentView: View {
-    @StateObject private var manager = WallpaperManager()
+    @ObservedObject var manager: WallpaperManager
     @State private var showFilePicker = false
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
+            // No accessibility modifiers here: the canvas builds its own AppKit
+            // accessibility tree (sections and split lines), and a SwiftUI label
+            // would flatten it into a single opaque element.
             CanvasView(manager: manager)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityLabel("Wallpaper preview canvas")
             Divider()
             statusBar
         }
@@ -32,24 +34,26 @@ struct ContentView: View {
             case .success(let urls):
                 if let url = urls.first { manager.loadImage(from: url) }
             case .failure(let error):
-                manager.statusMessage = error.localizedDescription
-                manager.isError = true
+                manager.setStatus(error.localizedDescription, error: true)
             }
         }
     }
 
     private var canAdjustSplits: Bool {
-        manager.sourceImage != nil && manager.layout.arrangement != .grid
+        manager.sourceImage != nil && manager.layout.arrangement != .grid && !manager.isLoading
     }
 
     private var toolbar: some View {
         HStack(spacing: 12) {
             Button("Open Image…") { showFilePicker = true }
                 .help("Open a panoramic image (⌘O)")
+                .accessibilityHint("Choose a wide image to span across your displays")
 
             Button("Reset Splits") { manager.resetFractions() }
                 .disabled(!canAdjustSplits)
-                .help("Evenly re-space the split lines")
+                .help("Evenly re-space the split lines (⌘R)")
+                .accessibilityLabel("Reset split lines")
+                .accessibilityHint("Spaces the split lines evenly across the image")
 
             Spacer()
 
@@ -58,17 +62,17 @@ struct ContentView: View {
                 .help("Automatically re-apply the wallpaper when displays are connected, disconnected, or rearranged")
                 .accessibilityHint("When on, the wallpaper is re-applied automatically after the display arrangement changes")
 
-            if manager.isProcessing {
+            if manager.isBusy {
                 ProgressView()
                     .controlSize(.small)
-                    .accessibilityLabel("Applying wallpaper")
+                    .accessibilityLabel(manager.isLoading ? "Opening image" : "Applying wallpaper")
             }
 
             Button("Apply Wallpaper") { manager.applyWallpapers() }
-                .keyboardShortcut(.return)
                 .buttonStyle(.borderedProminent)
-                .disabled(manager.sourceImage == nil || manager.isProcessing)
+                .disabled(manager.sourceImage == nil || manager.isBusy)
                 .help("Render and set the wallpaper on every display (⌘↩)")
+                .accessibilityHint("Renders each display's slice and sets it as the desktop picture")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -82,8 +86,10 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
+                // The icon carries the same success/failure meaning as the colour,
+                // so the state does not depend on distinguishing red from grey.
                 Label(manager.statusMessage,
-                      systemImage: manager.isError ? "exclamationmark.triangle" : "checkmark.circle")
+                      systemImage: manager.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                     .font(.caption)
                     .foregroundColor(manager.isError ? .red : .secondary)
             }
@@ -97,6 +103,20 @@ struct ContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
         .frame(minHeight: 28)
+        // Read as one coherent sentence rather than two disconnected fragments.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(statusAccessibilityLabel)
+    }
+
+    private var statusAccessibilityLabel: String {
+        var parts: [String] = []
+        if manager.statusMessage.isEmpty {
+            parts.append(displaySummary)
+        } else {
+            parts.append(manager.isError ? "Error. \(manager.statusMessage)" : manager.statusMessage)
+        }
+        if manager.sourceImage != nil { parts.append(hintText) }
+        return parts.joined(separator: ". ")
     }
 
     private var displaySummary: String {
