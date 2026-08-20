@@ -19,43 +19,86 @@ struct CanvasView: NSViewRepresentable {
 // MARK: - Interactive canvas view
 
 final class CanvasNSView: NSView {
-    var manager: WallpaperManager? { didSet { invalidateAccessibilityChildren(); needsDisplay = true } }
+    var manager: WallpaperManager? { didSet { structureChanged() } }
 
     private var draggingIndex: Int? = nil
     private var selectedIndex: Int? = nil
     private let minGap: CGFloat = 0.05
     private let hitThreshold: CGFloat = 16
-    private var a11yChildren: [SplitLineAccessibilityElement] = []
+
+    // Accessibility children, rebuilt only when the *structure* changes (display
+    // count, arrangement, names). Rebuilding on every value change would destroy
+    // the element VoiceOver is focused on mid-adjustment.
+    private var a11ySections: [SectionAccessibilityElement] = []
+    private var a11ySplits: [SplitLineAccessibilityElement] = []
+    private var a11yStructure: A11yStructure? = nil
+
+    // The source NSImage is backed by an NSCIImageRep, so drawing it re-renders
+    // the full-resolution CIImage through Core Image every single time — and draw()
+    // runs on every drag frame. Cache a flat raster at the size actually blitted.
+    private var cachedPreview: NSImage?
+    private weak var cachedPreviewSource: NSImage?
+    private var cachedPreviewSize: NSSize = .zero
+    private var cachedPreviewScale: CGFloat = 0
+
+    private struct A11yStructure: Equatable {
+        let arrangement: DisplayArrangement
+        let names: [String]
+        let splitCount: Int
+    }
 
     init(manager: WallpaperManager) {
         self.manager = manager
         super.init(frame: .zero)
-        registerForDraggedTypes([.fileURL])
-        observeScreenChanges()
+        commonInit()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        commonInit()
+    }
+
+    private func commonInit() {
         registerForDraggedTypes([.fileURL])
-        observeScreenChanges()
+        focusRingType = .exterior
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screensChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        // Contrast / transparency preferences affect how the overlays are drawn.
+        Accessibility.observeDisplayOptions(self, selector: #selector(displayOptionsChanged))
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        Accessibility.stopObservingDisplayOptions(self)
     }
 
     // Redraw when displays are reconfigured (e.g. a screen is rotated) so the
     // per-section crop preview reflects each screen's current aspect ratio.
-    private func observeScreenChanges() {
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(screensChanged),
-            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    @objc private func screensChanged() { structureChanged() }
+
+    @objc private func displayOptionsChanged() { needsDisplay = true }
+
+    /// The set of accessibility elements may no longer match the UI.
+    private func structureChanged() {
+        needsDisplay = true
+        guard rebuildAccessibilityChildrenIfNeeded() else { return }
+        NSAccessibility.post(element: self, notification: .layoutChanged)
     }
 
-    @objc private func screensChanged() { invalidateAccessibilityChildren(); needsDisplay = true }
-
     override var acceptsFirstResponder: Bool { true }
-    override func becomeFirstResponder() -> Bool { needsDisplay = true; return true }
+    override var canBecomeKeyView: Bool { true }
+
+    override func becomeFirstResponder() -> Bool {
+        // Give Full Keyboard Access users something to act on immediately rather
+        // than requiring a blind first arrow press to reveal a selection.
+        if selectedIndex == nil, let mgr = mgr(supportsSplits: true), !mgr.splitFractions.isEmpty {
+            selectedIndex = 0
+        }
+        needsDisplay = true
+        return true
+    }
+
     override func resignFirstResponder() -> Bool { needsDisplay = true; return true }
 
     // MARK: Drawing
@@ -69,11 +112,13 @@ final class CanvasNSView: NSView {
 
         guard let image = manager?.sourceImage else {
             drawDropHint()
+            drawCanvasFocusRing()
             return
         }
 
         let drawRect = aspectFit(size: image.size, in: bounds)
-        image.draw(in: drawRect, from: .zero, operation: .copy, fraction: 1.0)
+        preview(of: image, at: drawRect.size).draw(in: drawRect, from: .zero,
+                                                   operation: .copy, fraction: 1.0)
 
         let sections = sectionBands(in: drawRect)
         drawCropDimming(sections)
@@ -86,13 +131,63 @@ final class CanvasNSView: NSView {
         }
 
         drawSectionLabels(sections)
+        drawCanvasFocusRing()
+    }
+
+    /// A focus ring around the whole canvas so keyboard users can see where focus
+    /// is, even before a split line is selected. Drawn inside the bounds because
+    /// the canvas is flush with its container.
+    private func drawCanvasFocusRing() {
+        guard window?.firstResponder === self, window?.isKeyWindow == true else { return }
+        let ring = NSBezierPath(rect: bounds.insetBy(dx: 1.5, dy: 1.5))
+        ring.lineWidth = 3
+        NSColor.keyboardFocusIndicatorColor.setStroke()
+        ring.stroke()
+    }
+
+    /// A rasterised copy of `image` at `size`, rebuilt only when the image, the
+    /// draw size, or the backing scale changes. Falls back to the original image
+    /// if a bitmap cannot be created.
+    private func preview(of image: NSImage, at size: NSSize) -> NSImage {
+        let scale = window?.backingScaleFactor ?? 1
+        if let cached = cachedPreview, cachedPreviewSource === image,
+           cachedPreviewScale == scale,
+           abs(cachedPreviewSize.width - size.width) < 0.5,
+           abs(cachedPreviewSize.height - size.height) < 0.5 {
+            return cached
+        }
+
+        let rect = NSRect(origin: .zero, size: size)
+        guard size.width >= 1, size.height >= 1,
+              let rep = bitmapImageRepForCachingDisplay(in: rect) else { return image }
+
+        // The rep's initial contents are undefined, so bail rather than cache
+        // uninitialised pixels if no context can be made for it.
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return image }
+
+        // Matches the view's backing store, so the raster keeps the display's
+        // scale and colour space rather than being flattened to device RGB.
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        image.draw(in: rect, from: .zero, operation: .copy, fraction: 1.0)
+        NSGraphicsContext.restoreGraphicsState()
+
+        let raster = NSImage(size: size)
+        raster.addRepresentation(rep)
+        cachedPreview = raster
+        cachedPreviewSource = image
+        cachedPreviewSize = size
+        cachedPreviewScale = scale
+        return raster
     }
 
     private func drawDropHint() {
-        let text  = "Open an image with ⌘O  or  drag and drop here" as NSString
+        let text = "Open an image with ⌘O  or  drag and drop here" as NSString
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 15, weight: .regular),
-            .foregroundColor: NSColor.tertiaryLabelColor
+            .font: Accessibility.font(forTextStyle: .body),
+            // tertiaryLabelColor is deliberately low-contrast; this hint is the
+            // only content on screen, so it uses a colour that stays readable.
+            .foregroundColor: Accessibility.increaseContrast ? NSColor.labelColor : NSColor.secondaryLabelColor
         ]
         let sz = text.size(withAttributes: attrs)
         text.draw(at: NSPoint(x: bounds.midX - sz.width / 2, y: bounds.midY - sz.height / 2),
@@ -107,30 +202,40 @@ final class CanvasNSView: NSView {
         let name: String
     }
 
+    /// Display name for section `i`, falling back to a positional name when the
+    /// split count temporarily outruns the known displays.
+    private func sectionName(_ i: Int) -> String {
+        guard let mgr = manager, i < mgr.slots.count else { return "Screen \(i + 1)" }
+        return mgr.slots[i].name
+    }
+
+    private func sectionCount(_ mgr: WallpaperManager) -> Int {
+        mgr.layout.arrangement == .grid ? mgr.slots.count : mgr.splitFractions.count + 1
+    }
+
     /// The on-canvas rectangle, target aspect, and label for each display's slice.
     private func sectionBands(in drawRect: NSRect) -> [Section] {
         guard let mgr = manager else { return [] }
         let slots = mgr.slots
 
         func aspect(_ i: Int) -> CGFloat { i < slots.count ? slots[i].aspect : drawRect.width / drawRect.height }
-        func name(_ i: Int)   -> String  { i < slots.count ? slots[i].name : "Screen \(i + 1)" }
 
         switch mgr.layout.arrangement {
         case .row:
-            let cuts: [CGFloat] = [0] + mgr.splitFractions.sorted() + [1]
+            let cuts: [CGFloat] = [0] + mgr.splitFractions + [1]
             return (0..<cuts.count - 1).map { i in
                 let xL = drawRect.minX + drawRect.width * cuts[i]
                 let xR = drawRect.minX + drawRect.width * cuts[i + 1]
                 return Section(rect: NSRect(x: xL, y: drawRect.minY, width: xR - xL, height: drawRect.height),
-                               aspect: aspect(i), name: name(i))
+                               aspect: aspect(i), name: sectionName(i))
             }
         case .column:
-            let cuts: [CGFloat] = [0] + mgr.splitFractions.sorted() + [1]
+            let cuts: [CGFloat] = [0] + mgr.splitFractions + [1]
             return (0..<cuts.count - 1).map { i in
                 let yTop = drawRect.maxY - drawRect.height * cuts[i]      // cut 0 = top of image
                 let yBot = drawRect.maxY - drawRect.height * cuts[i + 1]
                 return Section(rect: NSRect(x: drawRect.minX, y: yBot, width: drawRect.width, height: yTop - yBot),
-                               aspect: aspect(i), name: name(i))
+                               aspect: aspect(i), name: sectionName(i))
             }
         case .grid:
             let u = mgr.unionBox
@@ -142,7 +247,7 @@ final class CanvasNSView: NSView {
                                   y: drawRect.minY + ny * drawRect.height,
                                   width:  (f.width / u.width) * drawRect.width,
                                   height: (f.height / u.height) * drawRect.height)
-                return Section(rect: rect, aspect: slot.aspect, name: slot.name)
+                return Section(rect: rect, aspect: slot.aspect, name: sectionName(i))
             }
         }
     }
@@ -150,7 +255,10 @@ final class CanvasNSView: NSView {
     /// Dim the parts of each section that will be cropped away, so the preview
     /// shows exactly what lands on each display (mirrors WallpaperGeometry.centerCrop).
     private func drawCropDimming(_ sections: [Section]) {
-        NSColor.black.withAlphaComponent(0.55).setFill()
+        // Translucent dimming reads as a subtle veil; with reduced transparency or
+        // increased contrast the trimmed area needs to be unmistakably excluded.
+        let alpha: CGFloat = Accessibility.prefersOpaqueOverlays ? 0.85 : 0.55
+        NSColor.black.withAlphaComponent(alpha).setFill()
         for s in sections {
             let band = s.rect
             let kept = WallpaperGeometry.centerCrop(band, toAspect: s.aspect)
@@ -168,6 +276,7 @@ final class CanvasNSView: NSView {
         guard let mgr = manager else { return }
         let axis = mgr.layout.axis
         let focused = (window?.firstResponder === self)
+        let handleSize: CGFloat = Accessibility.increaseContrast ? 26 : 22
 
         for (i, fraction) in mgr.splitFractions.enumerated() {
             let (a, b): (NSPoint, NSPoint)   // line endpoints
@@ -183,70 +292,106 @@ final class CanvasNSView: NSView {
                 handleCenter = NSPoint(x: drawRect.midX, y: y)
             }
 
-            drawDashedLine(from: a, to: b)
+            drawSplitLine(from: a, to: b)
 
-            let handleRect = NSRect(x: handleCenter.x - 10, y: handleCenter.y - 10, width: 20, height: 20)
+            let handleRect = NSRect(x: handleCenter.x - handleSize / 2, y: handleCenter.y - handleSize / 2,
+                                    width: handleSize, height: handleSize)
             NSColor.white.setFill()
             NSBezierPath(ovalIn: handleRect).fill()
             let border = NSBezierPath(ovalIn: handleRect)
-            border.lineWidth = 2
-            NSColor.systemBlue.setStroke()
+            border.lineWidth = Accessibility.increaseContrast ? 3 : 2
+            (Accessibility.increaseContrast ? NSColor.black : NSColor.systemBlue).setStroke()
             border.stroke()
 
-            // Focus ring on the keyboard-selected handle.
-            if focused, i == selectedIndex {
-                let ring = NSBezierPath(ovalIn: handleRect.insetBy(dx: -4, dy: -4))
-                ring.lineWidth = 3
-                NSColor.keyboardFocusIndicatorColor.setStroke()
-                ring.stroke()
+            if i == selectedIndex {
+                // A filled centre marks the selected handle by shape rather than
+                // colour alone, so selection survives any colour-vision setting.
+                NSColor.black.setFill()
+                NSBezierPath(ovalIn: handleRect.insetBy(dx: handleSize * 0.32, dy: handleSize * 0.32)).fill()
+
+                if focused {
+                    let ring = NSBezierPath(ovalIn: handleRect.insetBy(dx: -4, dy: -4))
+                    ring.lineWidth = 3
+                    NSColor.keyboardFocusIndicatorColor.setStroke()
+                    ring.stroke()
+                }
             }
         }
     }
 
-    private func drawDashedLine(from a: NSPoint, to b: NSPoint) {
-        // Shadow offset by 1pt for contrast against any image colour.
-        let shadow = NSBezierPath()
-        shadow.move(to: NSPoint(x: a.x + 1, y: a.y - 1)); shadow.line(to: NSPoint(x: b.x + 1, y: b.y - 1))
-        shadow.lineWidth = 2; shadow.setLineDash([8, 4], count: 2, phase: 0)
-        NSColor.black.withAlphaComponent(0.35).setStroke(); shadow.stroke()
+    private func drawSplitLine(from a: NSPoint, to b: NSPoint) {
+        let highContrast = Accessibility.increaseContrast
+        let dash: [CGFloat] = highContrast ? [] : [8, 4]
+        let width: CGFloat = highContrast ? 3 : 2
 
-        let line = NSBezierPath()
-        line.move(to: a); line.line(to: b)
-        line.lineWidth = 2; line.setLineDash([8, 4], count: 2, phase: 0)
-        NSColor.white.withAlphaComponent(0.9).setStroke(); line.stroke()
+        func stroke(width: CGFloat, color: NSColor) {
+            let path = NSBezierPath()
+            path.move(to: a); path.line(to: b)
+            path.lineWidth = width
+            if !dash.isEmpty { path.setLineDash(dash, count: dash.count, phase: 0) }
+            color.setStroke()
+            path.stroke()
+        }
+
+        // A wider dark stroke underneath outlines the line on every side, so it
+        // stays visible over light imagery as well as dark.
+        stroke(width: width + 2, color: .black.withAlphaComponent(highContrast ? 1.0 : 0.55))
+        stroke(width: width, color: .white.withAlphaComponent(highContrast ? 1.0 : 0.95))
     }
 
     private func drawGridOutlines(_ sections: [Section]) {
-        NSColor.white.withAlphaComponent(0.85).setStroke()
+        let highContrast = Accessibility.increaseContrast
         for s in sections {
-            let path = NSBezierPath(rect: s.rect.insetBy(dx: 1, dy: 1))
-            path.lineWidth = 2
-            path.setLineDash([8, 4], count: 2, phase: 0)
+            let rect = s.rect.insetBy(dx: 1, dy: 1)
+            let outline = NSBezierPath(rect: rect)
+            outline.lineWidth = highContrast ? 5 : 4
+            if !highContrast { outline.setLineDash([8, 4], count: 2, phase: 0) }
+            NSColor.black.withAlphaComponent(highContrast ? 1.0 : 0.55).setStroke()
+            outline.stroke()
+
+            let path = NSBezierPath(rect: rect)
+            path.lineWidth = highContrast ? 3 : 2
+            if !highContrast { path.setLineDash([8, 4], count: 2, phase: 0) }
+            NSColor.white.withAlphaComponent(highContrast ? 1.0 : 0.9).setStroke()
             path.stroke()
         }
     }
 
     private func drawSectionLabels(_ sections: [Section]) {
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.85),
-            .shadow: {
-                let s = NSShadow(); s.shadowColor = .black; s.shadowBlurRadius = 3; return s
-            }()
+            .font: Accessibility.font(forTextStyle: .caption1, weight: .semibold),
+            .foregroundColor: NSColor.white
         ]
+        // A solid chip behind the label guarantees legible contrast over any
+        // image, which a drop shadow alone cannot.
+        let chipColor = NSColor.black.withAlphaComponent(Accessibility.prefersOpaqueOverlays ? 1.0 : 0.7)
+
         for s in sections {
             let label = s.name as NSString
             let sz = label.size(withAttributes: attrs)
-            label.draw(at: NSPoint(x: s.rect.midX - sz.width / 2, y: s.rect.minY + 8), withAttributes: attrs)
+            let origin = NSPoint(x: s.rect.midX - sz.width / 2, y: s.rect.minY + 10)
+            let chip = NSRect(x: origin.x - 6, y: origin.y - 3, width: sz.width + 12, height: sz.height + 6)
+
+            chipColor.setFill()
+            NSBezierPath(roundedRect: chip, xRadius: 5, yRadius: 5).fill()
+            if Accessibility.increaseContrast {
+                let border = NSBezierPath(roundedRect: chip, xRadius: 5, yRadius: 5)
+                border.lineWidth = 1
+                NSColor.white.setStroke()
+                border.stroke()
+            }
+            label.draw(at: origin, withAttributes: attrs)
         }
     }
 
     // MARK: Mouse — drag split lines
 
     override func mouseDown(with event: NSEvent) {
-        guard let mgr = mgr(supportsSplits: true),
-              let drawRect = imageDrawRect() else { return }
+        // Take focus on any click, including grid layouts, so the canvas is a
+        // predictable keyboard destination regardless of arrangement.
         window?.makeFirstResponder(self)
+
+        guard let mgr = mgr(supportsSplits: true), let drawRect = imageDrawRect() else { return }
         let pt = convert(event.locationInWindow, from: nil)
         draggingIndex = nil
         for (i, fraction) in mgr.splitFractions.enumerated()
@@ -264,11 +409,30 @@ final class CanvasNSView: NSView {
         setFraction(index: idx, to: fractionValue(of: pt, axis: mgr.layout.axis, in: drawRect))
     }
 
-    override func mouseUp(with event: NSEvent) { draggingIndex = nil }
+    override func mouseUp(with event: NSEvent) {
+        if let idx = draggingIndex { announceSplit(index: idx) }
+        draggingIndex = nil
+    }
 
     // MARK: Keyboard — nudge / select split lines
 
     override func keyDown(with event: NSEvent) {
+        // Tab must keep moving through the key view loop, so Full Keyboard Access
+        // users are never trapped inside the canvas.
+        if event.keyCode == 48 {
+            if event.modifierFlags.contains(.shift) {
+                window?.selectPreviousKeyView(self)
+            } else {
+                window?.selectNextKeyView(self)
+            }
+            return
+        }
+        if event.keyCode == 53, selectedIndex != nil {   // escape clears the selection
+            selectedIndex = nil
+            needsDisplay = true
+            return
+        }
+
         guard let mgr = mgr(supportsSplits: true), !mgr.splitFractions.isEmpty else {
             super.keyDown(with: event); return
         }
@@ -285,6 +449,10 @@ final class CanvasNSView: NSView {
             axis == .vertical   ? nudge(by: -step) : changeSelection(-1)
         case 125: // down
             axis == .vertical   ? nudge(by:  step) : changeSelection(1)
+        case 115: // home
+            moveSelectedToLimit(towardStart: true)
+        case 119: // end
+            moveSelectedToLimit(towardStart: false)
         default:
             super.keyDown(with: event)
         }
@@ -295,14 +463,35 @@ final class CanvasNSView: NSView {
         if selectedIndex == nil { selectedIndex = 0 }
         guard let idx = selectedIndex, idx < mgr.splitFractions.count else { return }
         setFraction(index: idx, to: mgr.splitFractions[idx] + delta)
+        announceSplit(index: idx)
+    }
+
+    /// Push the selected split as far as it will go, which is otherwise dozens of
+    /// arrow presses away.
+    private func moveSelectedToLimit(towardStart: Bool) {
+        guard let mgr = manager else { return }
+        if selectedIndex == nil { selectedIndex = 0 }
+        guard let idx = selectedIndex, idx < mgr.splitFractions.count else { return }
+        setFraction(index: idx, to: towardStart ? 0 : 1)
+        announceSplit(index: idx)
     }
 
     private func changeSelection(_ delta: Int) {
         guard let mgr = manager, !mgr.splitFractions.isEmpty else { return }
         let count = mgr.splitFractions.count
         let current = selectedIndex ?? 0
-        selectedIndex = max(0, min(count - 1, current + delta))
+        let next = max(0, min(count - 1, current + delta))
+        selectedIndex = next
         needsDisplay = true
+        announceSplit(index: next)
+    }
+
+    /// Speak the split's identity and position after a keyboard or mouse change.
+    /// VoiceOver only narrates its own increment/decrement automatically.
+    private func announceSplit(index: Int) {
+        guard let mgr = manager, index < mgr.splitFractions.count else { return }
+        Accessibility.announce(
+            "\(accessibilityLabelForSplit(index: index)), \(Accessibility.percent(mgr.splitFractions[index])) percent")
     }
 
     // MARK: Split adjustment (shared by mouse, keyboard, accessibility)
@@ -310,13 +499,26 @@ final class CanvasNSView: NSView {
     /// Set split `index` to `value`, clamped away from its neighbours and the edges.
     func setFraction(index idx: Int, to value: CGFloat) {
         guard let mgr = manager, idx >= 0, idx < mgr.splitFractions.count else { return }
-        let fractions = mgr.splitFractions
-        let lower = idx > 0                   ? fractions[idx - 1] + minGap : minGap
-        let upper = idx < fractions.count - 1 ? fractions[idx + 1] - minGap : 1 - minGap
-        mgr.splitFractions[idx] = max(lower, min(upper, value))
+        let clamped = max(splitLowerBound(idx), min(splitUpperBound(idx), value))
+        guard clamped != mgr.splitFractions[idx] else { return }
+        mgr.splitFractions[idx] = clamped
         selectedIndex = idx
-        invalidateAccessibilityChildren()
+        if idx < a11ySplits.count {
+            NSAccessibility.post(element: a11ySplits[idx], notification: .valueChanged)
+        }
         needsDisplay = true
+    }
+
+    /// The smallest value split `idx` may take without crossing its neighbour.
+    func splitLowerBound(_ idx: Int) -> CGFloat {
+        guard let mgr = manager, idx > 0, idx - 1 < mgr.splitFractions.count else { return minGap }
+        return mgr.splitFractions[idx - 1] + minGap
+    }
+
+    /// The largest value split `idx` may take without crossing its neighbour.
+    func splitUpperBound(_ idx: Int) -> CGFloat {
+        guard let mgr = manager, idx + 1 < mgr.splitFractions.count else { return 1 - minGap }
+        return mgr.splitFractions[idx + 1] - minGap
     }
 
     // MARK: Drag-and-drop
@@ -380,29 +582,69 @@ final class CanvasNSView: NSView {
 
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
+    override func accessibilityRoleDescription() -> String? { "wallpaper preview" }
 
     override func accessibilityLabel() -> String? {
-        guard let mgr = manager else { return "Wallpaper canvas" }
-        guard mgr.sourceImage != nil else { return "Wallpaper canvas. No image loaded. Open an image with Command O or drag and drop." }
-        let n = mgr.slots.count
+        guard let mgr = manager else { return "Wallpaper preview" }
+        guard mgr.sourceImage != nil else {
+            return "Wallpaper preview. No image loaded. Open an image with Command O, or drag and drop one here."
+        }
+        let n = max(sectionCount(mgr), 1)
+        let displays = "\(n) display\(n == 1 ? "" : "s")"
         switch mgr.layout.arrangement {
-        case .row:    return "Panorama preview across \(n) displays in a row. Drag or arrow-key the split lines to adjust."
-        case .column: return "Panorama preview across \(n) displays in a column. Drag or arrow-key the split lines to adjust."
-        case .grid:   return "Panorama preview across \(n) displays arranged in a grid. Split positions are fixed for grid layouts."
+        case .row:    return "Wallpaper preview spanning \(displays) in a row."
+        case .column: return "Wallpaper preview spanning \(displays) in a column."
+        case .grid:   return "Wallpaper preview spanning \(displays) arranged in a grid."
+        }
+    }
+
+    override func accessibilityHelp() -> String? {
+        guard let mgr = manager, mgr.sourceImage != nil else {
+            return "Press Command O to open an image."
+        }
+        switch mgr.layout.arrangement {
+        case .grid:
+            return "Each display is mapped to the matching region of the image. Split positions are fixed for grid arrangements."
+        case .row:
+            return "Navigate to a split line and adjust it with Control Option Left and Right, or select it on the canvas and use the arrow keys. Hold Shift for larger steps, or press Home and End to move it to its limits."
+        case .column:
+            return "Navigate to a split line and adjust it with Control Option Up and Down, or select it on the canvas and use the arrow keys. Hold Shift for larger steps, or press Home and End to move it to its limits."
         }
     }
 
     override func accessibilityChildren() -> [Any]? {
-        guard let mgr = manager, mgr.sourceImage != nil,
-              mgr.layout.arrangement != .grid, !mgr.splitFractions.isEmpty else { return nil }
-        if a11yChildren.count != mgr.splitFractions.count {
-            a11yChildren = mgr.splitFractions.indices.map { SplitLineAccessibilityElement(canvas: self, index: $0) }
+        _ = rebuildAccessibilityChildrenIfNeeded()
+        guard !a11ySections.isEmpty else { return nil }
+        // Interleave so VoiceOver walks the canvas in visual order:
+        // screen, the split after it, the next screen, and so on.
+        var children: [Any] = []
+        for (i, section) in a11ySections.enumerated() {
+            children.append(section)
+            if i < a11ySplits.count { children.append(a11ySplits[i]) }
         }
-        return a11yChildren
+        return children
     }
 
-    private func invalidateAccessibilityChildren() {
-        a11yChildren.removeAll()
+    /// Rebuild the accessibility elements if the structure changed. Returns whether
+    /// anything was rebuilt.
+    @discardableResult
+    private func rebuildAccessibilityChildrenIfNeeded() -> Bool {
+        guard let mgr = manager, mgr.sourceImage != nil else {
+            let had = !a11ySections.isEmpty || !a11ySplits.isEmpty
+            a11ySections = []; a11ySplits = []; a11yStructure = nil
+            return had
+        }
+        let count = sectionCount(mgr)
+        let structure = A11yStructure(
+            arrangement: mgr.layout.arrangement,
+            names: (0..<count).map(sectionName),
+            splitCount: mgr.layout.arrangement == .grid ? 0 : mgr.splitFractions.count)
+        guard structure != a11yStructure else { return false }
+
+        a11yStructure = structure
+        a11ySections = (0..<count).map { SectionAccessibilityElement(canvas: self, index: $0) }
+        a11ySplits = (0..<structure.splitCount).map { SplitLineAccessibilityElement(canvas: self, index: $0) }
+        return true
     }
 
     /// Screen-space frame of split handle `index`, for its accessibility element.
@@ -413,8 +655,16 @@ final class CanvasNSView: NSView {
         let center: NSPoint = mgr.layout.axis == .horizontal
             ? NSPoint(x: drawRect.minX + drawRect.width * f, y: drawRect.midY)
             : NSPoint(x: drawRect.midX, y: drawRect.maxY - drawRect.height * f)
-        let inView = NSRect(x: center.x - 10, y: center.y - 10, width: 20, height: 20)
+        let inView = NSRect(x: center.x - 14, y: center.y - 14, width: 28, height: 28)
         return window.convertToScreen(convert(inView, to: nil))
+    }
+
+    /// Screen-space frame of the band belonging to display `index`.
+    func accessibilitySectionFrame(index: Int) -> NSRect {
+        guard let drawRect = imageDrawRect(), let window = window else { return .zero }
+        let sections = sectionBands(in: drawRect)
+        guard index < sections.count else { return .zero }
+        return window.convertToScreen(convert(sections[index].rect, to: nil))
     }
 
     func fraction(at index: Int) -> CGFloat {
@@ -423,11 +673,83 @@ final class CanvasNSView: NSView {
     }
 
     func accessibilityLabelForSplit(index: Int) -> String {
-        guard let mgr = manager else { return "Split line" }
-        let a = index < mgr.slots.count ? mgr.slots[index].name : "Screen \(index + 1)"
-        let b = index + 1 < mgr.slots.count ? mgr.slots[index + 1].name : "Screen \(index + 2)"
-        return "Split line between \(a) and \(b)"
+        "Split line between \(sectionName(index)) and \(sectionName(index + 1))"
     }
+
+    /// Mirror VoiceOver focus into the on-screen selection, so the visible focus
+    /// ring and the VoiceOver cursor never disagree.
+    func focusSplit(index: Int) {
+        selectedIndex = index
+        needsDisplay = true
+    }
+
+    func accessibilityLabelForSection(index: Int) -> String {
+        guard let mgr = manager else { return sectionName(index) }
+        return "\(sectionName(index)), display \(index + 1) of \(sectionCount(mgr))"
+    }
+
+    /// What this display will actually show: which part of the image it covers,
+    /// and how much of that gets trimmed to match its shape.
+    func accessibilityValueForSection(index: Int) -> String {
+        guard let mgr = manager, let drawRect = imageDrawRect() else { return "" }
+        let sections = sectionBands(in: drawRect)
+        guard index < sections.count else { return "" }
+        let s = sections[index]
+
+        var parts: [String] = [spanDescription(for: s, in: drawRect, arrangement: mgr.layout.arrangement)]
+
+        let kept = WallpaperGeometry.centerCrop(s.rect, toAspect: s.aspect)
+        if s.rect.width > 0, kept.width < s.rect.width - 0.5 {
+            let trimmed = Accessibility.percent((s.rect.width - kept.width) / s.rect.width)
+            parts.append("\(trimmed) percent trimmed from the left and right to fit this display.")
+        } else if s.rect.height > 0, kept.height < s.rect.height - 0.5 {
+            let trimmed = Accessibility.percent((s.rect.height - kept.height) / s.rect.height)
+            parts.append("\(trimmed) percent trimmed from the top and bottom to fit this display.")
+        } else {
+            parts.append("The whole slice fits this display.")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    private func spanDescription(for s: Section, in drawRect: NSRect, arrangement: DisplayArrangement) -> String {
+        guard drawRect.width > 0, drawRect.height > 0 else { return "" }
+        let left   = Accessibility.percent((s.rect.minX - drawRect.minX) / drawRect.width)
+        let right  = Accessibility.percent((s.rect.maxX - drawRect.minX) / drawRect.width)
+        let top    = Accessibility.percent((drawRect.maxY - s.rect.maxY) / drawRect.height)
+        let bottom = Accessibility.percent((drawRect.maxY - s.rect.minY) / drawRect.height)
+
+        switch arrangement {
+        case .row:
+            return "Shows \(left) to \(right) percent across the image."
+        case .column:
+            return "Shows \(top) to \(bottom) percent down the image."
+        case .grid:
+            return "Shows \(left) to \(right) percent across and \(top) to \(bottom) percent down the image."
+        }
+    }
+}
+
+// MARK: - Accessible display section
+
+/// Exposes one display's slice of the panorama to VoiceOver, so screen reader
+/// users can hear what each display will show — including in grid arrangements,
+/// which have no split lines to navigate.
+final class SectionAccessibilityElement: NSAccessibilityElement {
+    private weak var canvas: CanvasNSView?
+    private let index: Int
+
+    init(canvas: CanvasNSView, index: Int) {
+        self.canvas = canvas
+        self.index = index
+        super.init()
+        setAccessibilityParent(canvas)
+        setAccessibilityRole(.staticText)
+    }
+
+    override func accessibilityLabel() -> String? { canvas?.accessibilityLabelForSection(index: index) }
+    override func accessibilityRoleDescription() -> String? { "display section" }
+    override func accessibilityValue() -> Any? { canvas?.accessibilityValueForSection(index: index) }
+    override func accessibilityFrame() -> NSRect { canvas?.accessibilitySectionFrame(index: index) ?? .zero }
 }
 
 // MARK: - Accessible split line
@@ -451,20 +773,50 @@ final class SplitLineAccessibilityElement: NSAccessibilityElement {
     override func accessibilityRoleDescription() -> String? { "split line" }
     override func accessibilityFrame() -> NSRect { canvas?.accessibilityHandleFrame(index: index) ?? .zero }
 
+    // Sliders report numeric values; the spoken form comes from the value
+    // description so VoiceOver says "45 percent" rather than bare "45".
     override func accessibilityValue() -> Any? {
         guard let canvas = canvas else { return nil }
-        return "\(Int((canvas.fraction(at: index) * 100).rounded()))%"
+        return NSNumber(value: Accessibility.percent(canvas.fraction(at: index)))
+    }
+
+    override func accessibilityValueDescription() -> String? {
+        guard let canvas = canvas else { return nil }
+        return "\(Accessibility.percent(canvas.fraction(at: index))) percent"
+    }
+
+    override func accessibilityMinValue() -> Any? {
+        guard let canvas = canvas else { return nil }
+        return NSNumber(value: Accessibility.percent(canvas.splitLowerBound(index)))
+    }
+
+    override func accessibilityMaxValue() -> Any? {
+        guard let canvas = canvas else { return nil }
+        return NSNumber(value: Accessibility.percent(canvas.splitUpperBound(index)))
+    }
+
+    override func accessibilityHelp() -> String? {
+        "Adjust with Control Option Left and Right, or select this split line on the canvas and use the arrow keys."
+    }
+
+    override func setAccessibilityFocused(_ accessibilityFocused: Bool) {
+        super.setAccessibilityFocused(accessibilityFocused)
+        if accessibilityFocused { canvas?.focusSplit(index: index) }
     }
 
     override func accessibilityPerformIncrement() -> Bool {
-        guard let canvas = canvas else { return false }
-        canvas.setFraction(index: index, to: canvas.fraction(at: index) + step)
-        return true
+        adjust(by: step)
     }
 
     override func accessibilityPerformDecrement() -> Bool {
+        adjust(by: -step)
+    }
+
+    private func adjust(by delta: CGFloat) -> Bool {
         guard let canvas = canvas else { return false }
-        canvas.setFraction(index: index, to: canvas.fraction(at: index) - step)
-        return true
+        let before = canvas.fraction(at: index)
+        canvas.setFraction(index: index, to: before + delta)
+        // Report failure at the limits so VoiceOver can signal "no more room".
+        return canvas.fraction(at: index) != before
     }
 }

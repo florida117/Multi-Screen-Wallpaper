@@ -16,7 +16,8 @@ Download the [**latest MultiScreenWallpaper.dmg**](../../releases/latest/downloa
 - **Panorama spanning** — load a single wide image and distribute it across one or more displays
 - **Any arrangement** — horizontal rows, vertical columns, and grids are all handled: rows/columns get draggable split lines, while grids map each display to the image region matching its physical position
 - **Draggable split lines** — adjust exactly where the image is divided between screens with N−1 interactive split lines for N displays
-- **Keyboard & VoiceOver control** — select a split line and nudge it with the arrow keys (⇧ for larger steps); split lines are exposed to VoiceOver as adjustable sliders
+- **Keyboard & VoiceOver control** — every action has a menu command and shortcut; split lines are exposed to VoiceOver as adjustable sliders and each display's slice as a described section, so grid layouts are navigable too
+- **Accessibility preferences** — Increase Contrast, Reduce Transparency and the system text size all change how the canvas draws; status changes and display reconfigurations are announced to VoiceOver
 - **Per-screen center crop** — each display's slice is independently cropped to that screen's exact aspect ratio from the centre, so every screen gets a clean fill regardless of resolution or size differences
 - **Live crop preview** — the canvas dims the margins each screen will trim, so what you see in the preview is exactly what lands on the wall
 - **Live display tracking** — connecting, disconnecting, or rotating a display updates the split lines, labels, and crop preview immediately
@@ -35,6 +36,23 @@ Download the [**latest MultiScreenWallpaper.dmg**](../../releases/latest/downloa
 3. The image is displayed with split lines dividing it between your connected displays (evenly spaced by default)
 4. Drag any split line left or right to adjust where the image is divided
 5. Press **Apply Wallpaper** (⌘↩) to set the wallpaper on all displays
+
+### Keyboard
+
+| Shortcut | Action |
+|---|---|
+| ⌘O | Open an image |
+| ⌘↩ | Apply the wallpaper to every display |
+| ⌘R | Re-space the split lines evenly |
+| ←/→ or ↑/↓ | Move the selected split line (⇧ for larger steps) |
+| Cross-axis arrows | Select the previous / next split line |
+| Home / End | Move the selected split line to its limit |
+| ⎋ | Clear the split line selection |
+| ⇥ | Move focus out of the canvas |
+
+Under VoiceOver, each split line is a slider adjustable with Control-Option-arrow,
+and each display's slice reports which part of the image it shows and how much is
+trimmed to fit.
 
 ## How It Works
 
@@ -62,6 +80,7 @@ Previously generated wallpaper files are cleaned up after each successful apply.
 | `CanvasNSView.swift` | Interactive NSView canvas — image preview, draggable split lines, keyboard/VoiceOver control, drag-and-drop |
 | `WallpaperManager.swift` | State and logic — image loading, cropping, wallpaper application, persistence |
 | `WallpaperGeometry.swift` | Pure, AppKit-free geometry — arrangement detection, slicing, cropping (unit-tested) |
+| `Accessibility.swift` | System accessibility preferences, VoiceOver announcements, preferred-size fonts |
 
 ### Key technical decisions
 
@@ -70,6 +89,9 @@ Previously generated wallpaper files are cleaned up after each successful apply.
 - **`CIImage` pipeline** — thread-safe, GPU-accelerated, produces correctly-oriented PNGs without manual coordinate flipping
 - **Background render, main-thread apply** — image processing stays off the UI thread, while the AppKit wallpaper API is called on the main thread
 - **`CGImage.cropping(to:)`** — zero-copy crop (adjusts pixel offset only); the only real work is the final scale pass
+- **Image loading off the main thread** — opening a file can block (a cloud-backed file has to be materialised, and an unsandboxed app hitting a protected folder waits on the system permission prompt), so neither session restore nor an explicit open ever stalls the UI
+- **One apply at a time** — renders write to deterministic per-screen paths and prune anything outside the current set, so applies are coalesced rather than run concurrently; display-change bursts are debounced so a single apply runs against the settled arrangement
+- **Cached preview raster** — the preview is drawn from a flat bitmap regenerated only when the image, canvas size, or backing scale changes, so dragging a split line does not re-render the full-resolution image through Core Image on every frame
 
 ## Building
 
