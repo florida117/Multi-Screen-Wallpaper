@@ -31,7 +31,7 @@ See the [v1.3 release notes](../../releases/tag/v1.3) for the full list.
 - **Presets** — save an image together with its split positions, zoom and position, and reload it later from the Presets menu (⌘S to save)
 - **Keyboard & VoiceOver control** — every action has a menu command and shortcut; split lines are exposed to VoiceOver as adjustable sliders and each display's slice as a described section, so grid layouts are navigable too
 - **Accessibility preferences** — Increase Contrast, Reduce Transparency and the system text size all change how the canvas draws; status changes and display reconfigurations are announced to VoiceOver
-- **Per-screen center crop** — each display's slice is independently cropped to that screen's exact aspect ratio from the centre, so every screen gets a clean fill regardless of resolution or size differences
+- **Follows your macOS display arrangement** — each display's slice is cropped to that screen's exact aspect ratio and positioned to match where the display physically sits in System Settings › Displays › Arrange. Mount one monitor higher than its neighbour and the image steps up with it, so a horizon crossing the bezel stays level. Displays that sit level with each other crop from the centre, exactly as before
 - **Live crop preview** — the canvas dims the margins each screen will trim, so what you see in the preview is exactly what lands on the wall
 - **Live display tracking** — connecting, disconnecting, or rotating a display updates the split lines, labels, and crop preview immediately
 - **Reapply on display change** — optionally re-apply the wallpaper automatically when displays are connected, disconnected, or rearranged (macOS drops spanned wallpapers on such changes)

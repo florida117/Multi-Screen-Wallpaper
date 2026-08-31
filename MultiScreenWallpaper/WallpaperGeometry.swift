@@ -203,14 +203,86 @@ public enum WallpaperGeometry {
 
     /// Center-crop `rect` to `targetAspect` (width / height), trimming the longer axis.
     public static func centerCrop(_ rect: CGRect, toAspect targetAspect: CGFloat) -> CGRect {
+        alignedCrop(rect, toAspect: targetAspect, alignment: CGPoint(x: 0.5, y: 0.5))
+    }
+
+    /// Crop `rect` to `targetAspect`, sliding the crop along whichever axis gets
+    /// trimmed. `alignment` runs 0...1 per axis — 0 is left/bottom, 1 is right/top,
+    /// and 0.5 is centred, which reproduces `centerCrop` exactly.
+    ///
+    /// Only one axis is ever trimmed, so only the corresponding component of
+    /// `alignment` has any effect.
+    public static func alignedCrop(_ rect: CGRect, toAspect targetAspect: CGFloat,
+                                   alignment: CGPoint) -> CGRect {
         guard rect.width > 0, rect.height > 0, targetAspect > 0 else { return rect }
+        func unit(_ v: CGFloat) -> CGFloat { min(max(v, 0), 1) }
+
         let srcAspect = rect.width / rect.height
         if srcAspect > targetAspect {
             let w = rect.height * targetAspect
-            return CGRect(x: rect.minX + (rect.width - w) / 2, y: rect.minY, width: w, height: rect.height)
+            return CGRect(x: rect.minX + (rect.width - w) * unit(alignment.x), y: rect.minY,
+                          width: w, height: rect.height)
         } else {
             let h = rect.width / targetAspect
-            return CGRect(x: rect.minX, y: rect.minY + (rect.height - h) / 2, width: rect.width, height: h)
+            return CGRect(x: rect.minX, y: rect.minY + (rect.height - h) * unit(alignment.y),
+                          width: rect.width, height: h)
+        }
+    }
+
+    /// Crop `rect` to `targetAspect`, positioning it so that every display shares
+    /// one linear mapping from physical desk space to image space. A display
+    /// mounted higher than its neighbour therefore shows a correspondingly higher
+    /// band of the image, and a feature crossing the seam stays continuous.
+    ///
+    /// Only the axis the split lines do *not* control is taken from the
+    /// arrangement. In a row the splits already decide horizontal placement, so
+    /// letting the arrangement move the crop horizontally too would fight them;
+    /// only the vertical follows the desk. A column is the transpose. Grids are
+    /// already positioned by `proportionalRect`, so they crop centred.
+    ///
+    /// Note this cannot be expressed as a fixed 0...1 alignment computed from the
+    /// frames alone: each display has a different amount of slack between its
+    /// slice and its crop, so the same fraction means a different offset on each.
+    /// The mapping has to be built from the crop size, which is why this returns a
+    /// rectangle rather than an alignment.
+    ///
+    /// Uniformly aligned displays reduce to the centre crop exactly, so this only
+    /// moves anything for arrangements that really are staggered.
+    public static func arrangedCrop(_ rect: CGRect, toAspect targetAspect: CGFloat,
+                                    frame: CGRect, union: CGRect,
+                                    arrangement: DisplayArrangement) -> CGRect {
+        guard rect.width > 0, rect.height > 0, targetAspect > 0 else { return rect }
+        let centred = centerCrop(rect, toAspect: targetAspect)
+        guard arrangement != .grid else { return centred }
+
+        let srcAspect = rect.width / rect.height
+        switch arrangement {
+        case .row:
+            // The vertical is free only when height is what gets trimmed.
+            guard srcAspect <= targetAspect, frame.height > 0, union.height > 0 else { return centred }
+            let cropH = centred.height
+            // Image units consumed per point of physical height. Equal across
+            // displays when the splits are proportional, which is what makes the
+            // shared mapping continuous rather than merely ordered.
+            let rate = cropH / frame.height
+            let bandMinY = rect.minY + (rect.height - rate * union.height) / 2
+            let y = bandMinY + rate * (frame.minY - union.minY)
+            return CGRect(x: centred.minX,
+                          y: min(max(y, rect.minY), rect.maxY - cropH),
+                          width: centred.width, height: cropH)
+
+        case .column:
+            guard srcAspect >= targetAspect, frame.width > 0, union.width > 0 else { return centred }
+            let cropW = centred.width
+            let rate = cropW / frame.width
+            let bandMinX = rect.minX + (rect.width - rate * union.width) / 2
+            let x = bandMinX + rate * (frame.minX - union.minX)
+            return CGRect(x: min(max(x, rect.minX), rect.maxX - cropW),
+                          y: centred.minY,
+                          width: cropW, height: centred.height)
+
+        case .grid:
+            return centred
         }
     }
 
