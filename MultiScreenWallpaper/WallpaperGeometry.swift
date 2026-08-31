@@ -50,6 +50,77 @@ public enum WallpaperGeometry {
         return (1..<screens).map { CGFloat($0) / CGFloat(screens) }
     }
 
+    /// Interior split fractions that give each display a share of the image
+    /// proportional to its own extent along the split axis.
+    ///
+    /// An even split hands every display the same slice regardless of how wide it
+    /// is, so a narrow screen next to a wide one has to magnify its slice further
+    /// to fill itself — and the image steps in scale at the seam. Weighting by
+    /// display size makes every screen sample the source at the same rate, which
+    /// is what keeps a panorama continuous across the join.
+    ///
+    /// Falls back to an even split if any span is non-positive.
+    public static func proportionalFractions(spans: [CGFloat]) -> [CGFloat] {
+        guard spans.count > 1 else { return [] }
+        guard spans.allSatisfy({ $0 > 0 }) else { return evenFractions(count: spans.count) }
+        let total = spans.reduce(0, +)
+        var running: CGFloat = 0
+        return spans.dropLast().map { span in
+            running += span
+            return running / total
+        }
+    }
+
+    /// The split fractions a layout should start from.
+    ///
+    /// `orderedFrames` must already be in span order (as `DisplayLayout.order`
+    /// gives them). Grids have no split lines, so they get none.
+    public static func defaultFractions(orderedFrames: [CGRect],
+                                        arrangement: DisplayArrangement,
+                                        axis: SplitAxis) -> [CGFloat] {
+        guard arrangement != .grid, orderedFrames.count > 1 else { return [] }
+        let spans = orderedFrames.map { axis == .horizontal ? $0.width : $0.height }
+        return proportionalFractions(spans: spans)
+    }
+
+    // MARK: - Zoom and pan
+
+    /// The largest offset magnitude that keeps the zoomed window inside the image,
+    /// as a fraction of the full extent. Zero at `zoom <= 1`, where the whole image
+    /// is already visible and there is nothing to pan to.
+    public static func maxOffset(zoom: CGFloat) -> CGFloat {
+        let z = max(1, zoom)
+        return (1 - 1 / z) / 2
+    }
+
+    /// Clamp a pan offset to the range that keeps the image covering every display.
+    public static func clampOffset(_ offset: CGSize, zoom: CGFloat) -> CGSize {
+        let m = maxOffset(zoom: zoom)
+        return CGSize(width:  min(max(offset.width,  -m), m),
+                      height: min(max(offset.height, -m), m))
+    }
+
+    /// The sub-rectangle of `extent` that remains visible at `zoom`, panned by
+    /// `offset` (a fraction of the full extent, measured from the centre).
+    ///
+    /// The result is always fully inside `extent`, so panning can never expose an
+    /// edge: every display is guaranteed real image rather than blank margin.
+    /// `zoom` of 1 with a zero offset returns `extent` unchanged, which is what
+    /// makes the un-zoomed path identical to the original behaviour.
+    public static func visibleExtent(_ extent: CGRect, zoom: CGFloat, offset: CGSize) -> CGRect {
+        guard extent.width > 0, extent.height > 0 else { return extent }
+        let z = max(1, zoom)
+        let w = extent.width / z, h = extent.height / z
+        let slackX = extent.width - w, slackY = extent.height - h
+        let clamped = clampOffset(offset, zoom: z)
+        // Offset is measured from the centred position, in units of the full extent.
+        let x = extent.minX + slackX / 2 + clamped.width * extent.width
+        let y = extent.minY + slackY / 2 + clamped.height * extent.height
+        return CGRect(x: min(max(x, extent.minX), extent.minX + slackX),
+                      y: min(max(y, extent.minY), extent.minY + slackY),
+                      width: w, height: h)
+    }
+
     /// The bounding box that encloses every display frame.
     public static func unionBox(_ frames: [CGRect]) -> CGRect {
         guard !frames.isEmpty else { return .zero }

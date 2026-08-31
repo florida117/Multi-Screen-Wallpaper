@@ -26,14 +26,16 @@ See the [v1.3 release notes](../../releases/tag/v1.3) for the full list.
 
 - **Panorama spanning** — load a single wide image and distribute it across one or more displays
 - **Any arrangement** — horizontal rows, vertical columns, and grids are all handled: rows/columns get draggable split lines, while grids map each display to the image region matching its physical position
-- **Draggable split lines** — adjust exactly where the image is divided between screens with N−1 interactive split lines for N displays
+- **Draggable split lines** — adjust exactly where the image is divided between screens with N−1 interactive split lines for N displays; they start out proportional to each display's size, so a wide screen beside a narrow one gets a correspondingly wider slice and the image stays continuous across the seam
+- **Zoom and reposition** — zoom into the image and drag it to choose exactly which part gets spanned, instead of always taking the centre. Pinch or use ⌘+ / ⌘− and ⌘0, drag the image or nudge it with ⌥ arrows. Panning is bounded so every display always shows real image, never blank margin
+- **Presets** — save an image together with its split positions, zoom and position, and reload it later from the Presets menu (⌘S to save)
 - **Keyboard & VoiceOver control** — every action has a menu command and shortcut; split lines are exposed to VoiceOver as adjustable sliders and each display's slice as a described section, so grid layouts are navigable too
 - **Accessibility preferences** — Increase Contrast, Reduce Transparency and the system text size all change how the canvas draws; status changes and display reconfigurations are announced to VoiceOver
 - **Per-screen center crop** — each display's slice is independently cropped to that screen's exact aspect ratio from the centre, so every screen gets a clean fill regardless of resolution or size differences
 - **Live crop preview** — the canvas dims the margins each screen will trim, so what you see in the preview is exactly what lands on the wall
 - **Live display tracking** — connecting, disconnecting, or rotating a display updates the split lines, labels, and crop preview immediately
 - **Reapply on display change** — optionally re-apply the wallpaper automatically when displays are connected, disconnected, or rearranged (macOS drops spanned wallpapers on such changes)
-- **Session restore** — the last image and split positions are remembered across launches
+- **Session restore** — the last image, split positions, zoom and position are remembered across launches
 - **Wide-gamut aware** — Display P3 sources are written at 16-bit to avoid banding
 - **Multi-display support** — works with any number of connected displays, including mixed resolutions and sizes
 - **Drag and drop** — drag an image directly onto the canvas, or use ⌘O to open

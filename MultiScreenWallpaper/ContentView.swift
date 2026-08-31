@@ -4,16 +4,23 @@ import UniformTypeIdentifiers
 
 extension Notification.Name {
     static let openImageRequested = Notification.Name("openImageRequested")
+    static let savePresetRequested = Notification.Name("savePresetRequested")
 }
 
 struct ContentView: View {
     @ObservedObject var manager: WallpaperManager
     @State private var showFilePicker = false
+    @State private var showSavePreset = false
+    @State private var presetName = ""
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
+            if manager.sourceImage != nil {
+                framingBar
+                Divider()
+            }
             // No accessibility modifiers here: the canvas builds its own AppKit
             // accessibility tree (sections and split lines), and a SwiftUI label
             // would flatten it into a single opaque element.
@@ -25,6 +32,10 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openImageRequested)) { _ in
             showFilePicker = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .savePresetRequested)) { _ in
+            beginSavingPreset()
+        }
+        .sheet(isPresented: $showSavePreset) { savePresetSheet }
         .fileImporter(
             isPresented: $showFilePicker,
             allowedContentTypes: [.image],
@@ -49,11 +60,13 @@ struct ContentView: View {
                 .help("Open a panoramic image (⌘O)")
                 .accessibilityHint("Choose a wide image to span across your displays")
 
+            presetsMenu
+
             Button("Reset Splits") { manager.resetFractions() }
                 .disabled(!canAdjustSplits)
-                .help("Evenly re-space the split lines (⌘R)")
+                .help("Re-space the split lines to match your displays (⌘R)")
                 .accessibilityLabel("Reset split lines")
-                .accessibilityHint("Spaces the split lines evenly across the image")
+                .accessibilityHint("Gives each display a share of the image proportional to its size")
 
             Spacer()
 
@@ -77,6 +90,123 @@ struct ContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    // MARK: Presets
+
+    private var presetsMenu: some View {
+        Menu {
+            Button("Save Current…") { beginSavingPreset() }
+                .disabled(manager.sourceImage == nil)
+
+            if !manager.presets.isEmpty {
+                Divider()
+                Section("Load") {
+                    ForEach(manager.presets) { preset in
+                        Button { manager.loadPreset(preset) } label: {
+                            // A preset whose image has moved is kept but marked,
+                            // so it can still be renamed or deleted rather than
+                            // silently vanishing.
+                            Text(preset.isAvailable ? preset.name : "\(preset.name) (missing)")
+                        }
+                    }
+                }
+                Divider()
+                Menu("Delete") {
+                    ForEach(manager.presets) { preset in
+                        Button(preset.name) { manager.deletePreset(preset) }
+                    }
+                }
+            }
+        } label: {
+            Text("Presets")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Save the current image, splits and framing, or load a saved one")
+        .accessibilityLabel("Presets")
+        .accessibilityHint("Save the current arrangement, or load a previously saved one")
+    }
+
+    private func beginSavingPreset() {
+        guard manager.sourceImage != nil else { return }
+        presetName = manager.suggestedPresetName
+        showSavePreset = true
+    }
+
+    private var savePresetSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Save Preset")
+                .font(.headline)
+            Text("Stores the current image, split positions, zoom and position. Saving over an existing name replaces it.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField("Preset name", text: $presetName)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 280)
+                .accessibilityLabel("Preset name")
+                .onSubmit(commitPreset)
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { showSavePreset = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: commitPreset)
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+    }
+
+    private func commitPreset() {
+        manager.savePreset(named: presetName)
+        showSavePreset = false
+    }
+
+    // MARK: Framing
+
+    private var framingBar: some View {
+        HStack(spacing: 12) {
+            Text("Zoom")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Slider(value: $manager.zoom,
+                   in: WallpaperManager.minZoom...WallpaperManager.maxZoom)
+                .frame(width: 180)
+                .accessibilityLabel("Zoom")
+                .accessibilityValue(zoomLabel)
+                .help("Zoom into the image (⌘+ / ⌘−)")
+
+            Text(zoomLabel)
+                .font(.caption.monospacedDigit())
+                .foregroundColor(.secondary)
+                .frame(width: 46, alignment: .leading)
+                .accessibilityHidden(true)   // the slider already reports this
+
+            Button("Fit") { manager.resetFraming() }
+                .disabled(!manager.isFramed)
+                .help("Show the whole image again (⌘0)")
+                .accessibilityHint("Resets zoom and position to show the whole image")
+
+            Spacer()
+
+            if manager.canPan {
+                Text("Drag the image to reposition · ⌥ arrows")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .accessibilityHidden(true)   // duplicated by the canvas help text
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
+
+    private var zoomLabel: String {
+        "\(Int((manager.zoom * 100).rounded()))%"
     }
 
     private var statusBar: some View {
