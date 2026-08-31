@@ -13,6 +13,9 @@ struct CanvasView: NSViewRepresentable {
     func updateNSView(_ nsView: CanvasNSView, context: Context) {
         nsView.manager = manager
         nsView.needsDisplay = true
+        // Zoom may have crossed the threshold where the image becomes draggable,
+        // which changes whether the canvas offers a grab cursor.
+        nsView.window?.invalidateCursorRects(for: nsView)
     }
 }
 
@@ -23,6 +26,8 @@ final class CanvasNSView: NSView {
 
     private var draggingIndex: Int? = nil
     private var selectedIndex: Int? = nil
+    /// Last cursor position during an image-pan drag; nil when not panning.
+    private var panAnchor: NSPoint? = nil
     private let minGap: CGFloat = 0.05
     private let hitThreshold: CGFloat = 16
 
@@ -117,8 +122,7 @@ final class CanvasNSView: NSView {
         }
 
         let drawRect = aspectFit(size: image.size, in: bounds)
-        preview(of: image, at: drawRect.size).draw(in: drawRect, from: .zero,
-                                                   operation: .copy, fraction: 1.0)
+        drawPreview(of: image, in: drawRect)
 
         let sections = sectionBands(in: drawRect)
         drawCropDimming(sections)
@@ -143,6 +147,36 @@ final class CanvasNSView: NSView {
         ring.lineWidth = 3
         NSColor.keyboardFocusIndicatorColor.setStroke()
         ring.stroke()
+    }
+
+    /// Draw the part of the image the current zoom and pan leave visible, filling
+    /// `drawRect`. At fit this is the whole image, exactly as before framing existed.
+    private func drawPreview(of image: NSImage, in drawRect: NSRect) {
+        let zoom = manager?.zoom ?? 1
+        let offset = manager?.offset ?? .zero
+        let raster = preview(of: image, at: previewRasterSize(for: drawRect.size, zoom: zoom))
+
+        // `preview` falls back to the source image if it cannot make a bitmap, so
+        // take the size from what came back rather than what was asked for.
+        let base = raster.size
+        let unit = WallpaperGeometry.visibleExtent(CGRect(x: 0, y: 0, width: 1, height: 1),
+                                                   zoom: zoom, offset: offset)
+        let src = NSRect(x: unit.minX * base.width, y: unit.minY * base.height,
+                         width: unit.width * base.width, height: unit.height * base.height)
+        raster.draw(in: drawRect, from: src, operation: .copy, fraction: 1.0)
+    }
+
+    /// How large to rasterise the image behind the preview. Zooming in puts more
+    /// source pixels behind the same on-screen rectangle, so the raster grows with
+    /// the zoom — capped, so a deep zoom in a large window cannot allocate an
+    /// unbounded bitmap. Panning does not change this size, which is what keeps a
+    /// pan drag on the cached raster instead of re-rendering every frame.
+    private func previewRasterSize(for fitSize: NSSize, zoom: CGFloat) -> NSSize {
+        let maxDimension: CGFloat = 4096
+        let target = NSSize(width: fitSize.width * zoom, height: fitSize.height * zoom)
+        let overshoot = max(target.width, target.height) / maxDimension
+        guard overshoot > 1 else { return target }
+        return NSSize(width: target.width / overshoot, height: target.height / overshoot)
     }
 
     /// A rasterised copy of `image` at `size`, rebuilt only when the image, the
@@ -391,27 +425,76 @@ final class CanvasNSView: NSView {
         // predictable keyboard destination regardless of arrangement.
         window?.makeFirstResponder(self)
 
-        guard let mgr = mgr(supportsSplits: true), let drawRect = imageDrawRect() else { return }
+        guard let mgr = manager, mgr.sourceImage != nil, let drawRect = imageDrawRect() else { return }
         let pt = convert(event.locationInWindow, from: nil)
         draggingIndex = nil
-        for (i, fraction) in mgr.splitFractions.enumerated()
-        where abs(perpendicularDistance(of: pt, fraction: fraction, axis: mgr.layout.axis, in: drawRect)) < hitThreshold {
-            draggingIndex = i
-            selectedIndex = i
-            break
+        panAnchor = nil
+
+        // A split handle takes priority; grids have none to hit.
+        if mgr.layout.arrangement != .grid {
+            for (i, fraction) in mgr.splitFractions.enumerated()
+            where abs(perpendicularDistance(of: pt, fraction: fraction, axis: mgr.layout.axis, in: drawRect)) < hitThreshold {
+                draggingIndex = i
+                selectedIndex = i
+                break
+            }
+        }
+
+        // Anywhere else drags the image itself — but only when zoomed in, since at
+        // fit there is nowhere to pan to and the drag would do nothing.
+        if draggingIndex == nil, mgr.canPan {
+            panAnchor = pt
+            NSCursor.closedHand.push()
         }
         needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let idx = draggingIndex, let mgr = manager, let drawRect = imageDrawRect() else { return }
+        guard let mgr = manager, let drawRect = imageDrawRect() else { return }
         let pt = convert(event.locationInWindow, from: nil)
-        setFraction(index: idx, to: fractionValue(of: pt, axis: mgr.layout.axis, in: drawRect))
+
+        if let idx = draggingIndex {
+            setFraction(index: idx, to: fractionValue(of: pt, axis: mgr.layout.axis, in: drawRect))
+            return
+        }
+
+        guard let anchor = panAnchor, drawRect.width > 0, drawRect.height > 0 else { return }
+        // Dragging the image to the right reveals what lies to its left, so the
+        // visible window travels opposite to the cursor.
+        mgr.pan(dx: -(pt.x - anchor.x) / drawRect.width,
+                dy: -(pt.y - anchor.y) / drawRect.height)
+        panAnchor = pt
     }
 
     override func mouseUp(with event: NSEvent) {
         if let idx = draggingIndex { announceSplit(index: idx) }
+        if panAnchor != nil {
+            NSCursor.pop()
+            panAnchor = nil
+            // Announced once the drag settles rather than on every frame.
+            if let mgr = manager { Accessibility.announce(mgr.framingSummary) }
+        }
         draggingIndex = nil
+    }
+
+    // MARK: Pinch to zoom
+
+    override func magnify(with event: NSEvent) {
+        guard let mgr = manager, mgr.sourceImage != nil else { return }
+        mgr.zoomBy(1 + event.magnification)
+        if event.phase == .ended || event.phase == .cancelled {
+            Accessibility.announce(mgr.framingSummary)
+        }
+        needsDisplay = true
+    }
+
+    /// An open hand over the canvas signals that the image itself can be dragged.
+    /// Only offered when zoomed in, so it never promises an interaction that would
+    /// do nothing.
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard manager?.canPan == true else { return }
+        addCursorRect(bounds, cursor: .openHand)
     }
 
     // MARK: Keyboard — nudge / select split lines
@@ -598,17 +681,25 @@ final class CanvasNSView: NSView {
         }
     }
 
+    /// The current framing, so a screen reader user can tell how much of the image
+    /// is in play without inspecting each display section.
+    override func accessibilityValue() -> Any? {
+        guard let mgr = manager, mgr.sourceImage != nil else { return nil }
+        return mgr.framingSummary
+    }
+
     override func accessibilityHelp() -> String? {
         guard let mgr = manager, mgr.sourceImage != nil else {
             return "Press Command O to open an image."
         }
+        let framing = "Zoom with Command Plus and Command Minus, Command 0 to fit, and move the image with Option and the arrow keys."
         switch mgr.layout.arrangement {
         case .grid:
-            return "Each display is mapped to the matching region of the image. Split positions are fixed for grid arrangements."
+            return "Each display is mapped to the matching region of the image. Split positions are fixed for grid arrangements. \(framing)"
         case .row:
-            return "Navigate to a split line and adjust it with Control Option Left and Right, or select it on the canvas and use the arrow keys. Hold Shift for larger steps, or press Home and End to move it to its limits."
+            return "Navigate to a split line and adjust it with Control Option Left and Right, or select it on the canvas and use the arrow keys. Hold Shift for larger steps, or press Home and End to move it to its limits. \(framing)"
         case .column:
-            return "Navigate to a split line and adjust it with Control Option Up and Down, or select it on the canvas and use the arrow keys. Hold Shift for larger steps, or press Home and End to move it to its limits."
+            return "Navigate to a split line and adjust it with Control Option Up and Down, or select it on the canvas and use the arrow keys. Hold Shift for larger steps, or press Home and End to move it to its limits. \(framing)"
         }
     }
 
@@ -718,13 +809,17 @@ final class CanvasNSView: NSView {
         let top    = Accessibility.percent((drawRect.maxY - s.rect.maxY) / drawRect.height)
         let bottom = Accessibility.percent((drawRect.maxY - s.rect.minY) / drawRect.height)
 
+        // Percentages are of what is on the canvas, which is the whole image only
+        // when it is not zoomed — say which, so the figures are never ambiguous.
+        let subject = manager?.isFramed == true ? "the visible area" : "the image"
+
         switch arrangement {
         case .row:
-            return "Shows \(left) to \(right) percent across the image."
+            return "Shows \(left) to \(right) percent across \(subject)."
         case .column:
-            return "Shows \(top) to \(bottom) percent down the image."
+            return "Shows \(top) to \(bottom) percent down \(subject)."
         case .grid:
-            return "Shows \(left) to \(right) percent across and \(top) to \(bottom) percent down the image."
+            return "Shows \(left) to \(right) percent across and \(top) to \(bottom) percent down \(subject)."
         }
     }
 }
