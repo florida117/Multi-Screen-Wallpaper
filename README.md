@@ -182,3 +182,7 @@ The resulting `MultiScreenWallpaper.dmg` can be shared directly (AirDrop, USB, e
 - **Developer ID signed** — allows distribution outside the Mac App Store
 - **Notarized** — passes Gatekeeper on recipients' Macs without any security prompts
 - **Not sandboxed** — required for `NSWorkspace.setDesktopImageURL` to work; precludes Mac App Store distribution
+
+## License
+
+[MIT](LICENSE) © Kurtis Bell
