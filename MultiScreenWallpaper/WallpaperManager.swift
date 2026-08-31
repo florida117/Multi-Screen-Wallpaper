@@ -228,7 +228,9 @@ final class WallpaperManager: ObservableObject {
                         srcRect = WallpaperGeometry.sliceRect(in: ext, axis: axis, cuts: cuts, index: i)
                     }
                     let name = "\(base)_Screen\(i + 1).png"
-                    let wURL = try self.cropAndSave(ci: ci, srcRect: srcRect, screen: screen, name: name, storageDir: storageDir)
+                    let wURL = try self.cropAndSave(ci: ci, srcRect: srcRect, screen: screen,
+                                                    union: union, arrangement: arrangement,
+                                                    name: name, storageDir: storageDir)
                     renderedWallpapers.append((screen: screen, url: wURL))
                 }
 
@@ -448,6 +450,13 @@ final class WallpaperManager: ObservableObject {
         }
     }
 
+    /// The display frame the canvas should use when previewing slot `i`'s crop.
+    /// Falls back to the union box, which makes `arrangedCrop` centre the crop —
+    /// the right answer while the split count briefly outruns the known displays.
+    func frame(forSlot i: Int) -> CGRect {
+        i < slots.count ? slots[i].frame : unionBox
+    }
+
     private func refreshDisplays() {
         let screensRaw = NSScreen.screens
         let frames = screensRaw.map(\.frame)
@@ -536,13 +545,19 @@ final class WallpaperManager: ObservableObject {
         return image
     }
 
-    private func cropAndSave(ci: CIImage, srcRect: CGRect, screen: NSScreen, name: String, storageDir: URL) throws -> URL {
+    private func cropAndSave(ci: CIImage, srcRect: CGRect, screen: NSScreen,
+                             union: CGRect, arrangement: DisplayArrangement,
+                             name: String, storageDir: URL) throws -> URL {
         let scale  = screen.backingScaleFactor
         let pixelW = screen.frame.width  * scale
         let pixelH = screen.frame.height * scale
 
-        // Center-crop the slice to the screen's exact pixel aspect ratio.
-        let cropRect = WallpaperGeometry.centerCrop(srcRect, toAspect: pixelW / pixelH)
+        // Crop the slice to the screen's exact pixel aspect ratio, positioned to
+        // follow where this display physically sits. Uniformly aligned displays
+        // come back centred, i.e. the original centre crop.
+        let cropRect = WallpaperGeometry.arrangedCrop(srcRect, toAspect: pixelW / pixelH,
+                                                      frame: screen.frame, union: union,
+                                                      arrangement: arrangement)
 
         let processed = ci
             .cropped(to: cropRect)

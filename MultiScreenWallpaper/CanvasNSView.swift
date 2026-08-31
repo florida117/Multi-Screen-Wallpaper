@@ -234,6 +234,9 @@ final class CanvasNSView: NSView {
         let rect: NSRect
         let aspect: CGFloat
         let name: String
+        /// This display's physical frame, so the preview crop can follow the
+        /// arrangement exactly as the render will.
+        let frame: CGRect
     }
 
     /// Display name for section `i`, falling back to a positional name when the
@@ -261,7 +264,7 @@ final class CanvasNSView: NSView {
                 let xL = drawRect.minX + drawRect.width * cuts[i]
                 let xR = drawRect.minX + drawRect.width * cuts[i + 1]
                 return Section(rect: NSRect(x: xL, y: drawRect.minY, width: xR - xL, height: drawRect.height),
-                               aspect: aspect(i), name: sectionName(i))
+                               aspect: aspect(i), name: sectionName(i), frame: mgr.frame(forSlot: i))
             }
         case .column:
             let cuts: [CGFloat] = [0] + mgr.splitFractions + [1]
@@ -269,7 +272,7 @@ final class CanvasNSView: NSView {
                 let yTop = drawRect.maxY - drawRect.height * cuts[i]      // cut 0 = top of image
                 let yBot = drawRect.maxY - drawRect.height * cuts[i + 1]
                 return Section(rect: NSRect(x: drawRect.minX, y: yBot, width: drawRect.width, height: yTop - yBot),
-                               aspect: aspect(i), name: sectionName(i))
+                               aspect: aspect(i), name: sectionName(i), frame: mgr.frame(forSlot: i))
             }
         case .grid:
             let u = mgr.unionBox
@@ -281,13 +284,21 @@ final class CanvasNSView: NSView {
                                   y: drawRect.minY + ny * drawRect.height,
                                   width:  (f.width / u.width) * drawRect.width,
                                   height: (f.height / u.height) * drawRect.height)
-                return Section(rect: rect, aspect: slot.aspect, name: sectionName(i))
+                return Section(rect: rect, aspect: slot.aspect, name: sectionName(i), frame: f)
             }
         }
     }
 
+    /// The part of `rect` this section actually keeps, positioned by the physical
+    /// arrangement — the same call the renderer makes, so preview and output agree.
+    private func arrangedCrop(_ rect: NSRect, for s: Section) -> NSRect {
+        WallpaperGeometry.arrangedCrop(rect, toAspect: s.aspect, frame: s.frame,
+                                       union: manager?.unionBox ?? .zero,
+                                       arrangement: manager?.layout.arrangement ?? .row)
+    }
+
     /// Dim the parts of each section that will be cropped away, so the preview
-    /// shows exactly what lands on each display (mirrors WallpaperGeometry.centerCrop).
+    /// shows exactly what lands on each display (mirrors WallpaperGeometry.alignedCrop).
     private func drawCropDimming(_ sections: [Section]) {
         // Translucent dimming reads as a subtle veil; with reduced transparency or
         // increased contrast the trimmed area needs to be unmistakably excluded.
@@ -295,7 +306,7 @@ final class CanvasNSView: NSView {
         NSColor.black.withAlphaComponent(alpha).setFill()
         for s in sections {
             let band = s.rect
-            let kept = WallpaperGeometry.centerCrop(band, toAspect: s.aspect)
+            let kept = arrangedCrop(band, for: s)
             if kept.width < band.width - 0.5 {
                 NSRect(x: band.minX, y: band.minY, width: kept.minX - band.minX, height: band.height).fill()
                 NSRect(x: kept.maxX, y: band.minY, width: band.maxX - kept.maxX, height: band.height).fill()
@@ -789,7 +800,7 @@ final class CanvasNSView: NSView {
 
         var parts: [String] = [spanDescription(for: s, in: drawRect, arrangement: mgr.layout.arrangement)]
 
-        let kept = WallpaperGeometry.centerCrop(s.rect, toAspect: s.aspect)
+        let kept = arrangedCrop(s.rect, for: s)
         if s.rect.width > 0, kept.width < s.rect.width - 0.5 {
             let trimmed = Accessibility.percent((s.rect.width - kept.width) / s.rect.width)
             parts.append("\(trimmed) percent trimmed from the left and right to fit this display.")
