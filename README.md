@@ -4,18 +4,20 @@ A native Apple Silicon Mac app that spans a panoramic image across multiple disp
 
 ## Installation
 
-Download the [**latest MultiScreenWallpaper.dmg**](../../releases/latest/download/MultiScreenWallpaper.dmg) — currently **v1.3** — open it, and drag **MultiScreenWallpaper** to your Applications folder. See all versions on the [Releases](../../releases) page.
+Download the [**latest MultiScreenWallpaper.dmg**](../../releases/latest/download/MultiScreenWallpaper.dmg) — currently **v1.4** — open it, and drag **MultiScreenWallpaper** to your Applications folder. See all versions on the [Releases](../../releases) page.
 
 The download is Developer ID signed, notarized and stapled, so it opens without security prompts.
 
-## What's new in 1.3
+## What's new in 1.4
 
-- **Accessibility** — grid arrangements are now navigable under VoiceOver (they previously exposed nothing); split lines report proper slider values and bounds; the canvas honours Increase Contrast, Reduce Transparency and the system text size; every action has a menu command and shortcut; status and display changes are announced
-- **Fixed a launch hang** — restoring the previous session decoded its image on the main thread, so the app could stall before any window appeared when that file lived in a cloud-synced or permission-gated folder
-- **Fixed corrupted wallpapers on display changes** — overlapping applies could clobber each other's output; applies are now coalesced and display-change bursts debounced
-- **Faster preview** — dragging a split line no longer re-renders the full-resolution image on every frame
+- **Proportional split defaults** — each display now starts with a share of the image proportional to its own size, so a wide screen beside a narrow one samples the image at the same rate and the panorama no longer steps in scale at the seam
+- **Arrangement-aware cropping** — each display's slice is positioned to match where that display physically sits in System Settings › Displays › Arrange, so a horizon crossing the bezel stays level when one monitor is mounted higher than its neighbour
+- **Zoom and reposition** — zoom into the image and drag it to choose exactly which part gets spanned, instead of always taking the centre. Pinch or use ⌘+ / ⌘− and ⌘0, drag the image or nudge it with ⌥ arrows
+- **Presets** — save an image together with its split positions, zoom and position, and reload it later from the Presets menu (⌘S to save)
+- **New app icon** — built from SF Symbols, with the generator included in `Tools/`
+- **Now MIT licensed**
 
-See the [v1.3 release notes](../../releases/tag/v1.3) for the full list.
+See the [v1.4 release notes](../../releases/tag/v1.4) for the full list.
 
 ## Requirements
 
