@@ -60,12 +60,25 @@ struct DeskPreviewView: View {
             }
         }
 
+        // A laptop base at either end spills past its display; leave room so it
+        // is not cut off at the edge of the view.
+        var leftSpill: CGFloat = 0, rightSpill: CGFloat = 0   // in the displays' own points
+        if isRow {
+            for (slot, artwork) in zip(slots, artworks) {
+                guard let artwork else { continue }
+                let spill = artwork.overhang * slot.frame.width
+                leftSpill = max(leftSpill, spill - (slot.frame.minX - union.minX))
+                rightSpill = max(rightSpill, spill - (union.maxX - slot.frame.maxX))
+            }
+        }
+
         let margin: CGFloat = 8
-        let scaleX: CGFloat = (size.width - 2 * margin) / union.width
+        let scaleX: CGFloat = (size.width - 2 * margin) / (union.width + leftSpill + rightSpill)
         let scaleY: CGFloat = (size.height - 2 * margin - fixedFooter) / (union.height + scaledFooter)
         let scale: CGFloat = max(0, min(scaleX, scaleY))
         let footer: CGFloat = fixedFooter + scaledFooter * scale
-        let originX: CGFloat = (size.width - union.width * scale) / 2
+        let originX: CGFloat = (size.width - (union.width + leftSpill + rightSpill) * scale) / 2
+            + leftSpill * scale
         let originY: CGFloat = (size.height - footer - union.height * scale) / 2
 
         let crops = manager.deskCrops
@@ -333,6 +346,9 @@ struct DeviceArtwork {
     let notch: CGRect?
     /// The screen area's width over height.
     let screenAspect: CGFloat
+    /// How far the widest part below the bezel (a laptop's base) reaches past
+    /// each side of the bezel, as a fraction of the bezel's width.
+    let overhang: CGFloat
 
     /// How far the stand reaches below the bezel when the display is drawn
     /// `width` wide.
@@ -483,6 +499,17 @@ struct DeviceArtwork {
               isClear(max(bezelLeft - 2, 0), cy), isClear(min(bezelRight + 2, n - 1), cy)
         else { return nil }
 
+        // A laptop's base is wider than its lid. Walk in from each edge of every
+        // other row below the bezel to find how far it reaches past the sides.
+        var widest = 0
+        for y in stride(from: bezelBottom + 1, through: foot, by: 2) {
+            var x = 0
+            while x < bezelLeft, isClear(x, y) { x += 1 }
+            var r = n - 1
+            while r > bezelRight, isClear(r, y) { r -= 1 }
+            widest = max(widest, bezelLeft - x, r - bezelRight)
+        }
+
         let unit = CGFloat(n)
         return DeviceArtwork(
             image: image,
@@ -493,6 +520,7 @@ struct DeviceArtwork {
                           height: CGFloat(bezelBottom - bezelTop + 1) / unit),
             bottom: CGFloat(foot + 1) / unit,
             notch: notch,
-            screenAspect: CGFloat(screenW) / CGFloat(screenH))
+            screenAspect: CGFloat(screenW) / CGFloat(screenH),
+            overhang: CGFloat(widest) / CGFloat(bezelRight - bezelLeft + 1))
     }
 }

@@ -129,7 +129,7 @@ final class CanvasNSView: NSView {
         drawPreview(of: image, in: drawRect)
 
         let sections = sectionBands(in: drawRect)
-        drawCropDimming(sections)
+        drawCropDimming(sections, in: drawRect)
 
         switch manager?.layout.arrangement ?? .row {
         case .row, .column:
@@ -281,7 +281,7 @@ final class CanvasNSView: NSView {
             let u = mgr.unionBox
             guard u.width > 0, u.height > 0 else { return [] }
             return slots.enumerated().map { (i, slot) in
-                Section(rect: WallpaperGeometry.proportionalRect(in: drawRect, screenFrame: slot.frame, unionBox: u),
+                Section(rect: WallpaperGeometry.gridCell(in: drawRect, screenFrame: slot.frame, unionBox: u),
                         aspect: slot.aspect, name: sectionName(i), frame: slot.frame)
             }
         }
@@ -297,11 +297,21 @@ final class CanvasNSView: NSView {
 
     /// Dim the parts of each section that will be cropped away, so the preview
     /// shows exactly what lands on each display (mirrors WallpaperGeometry.alignedCrop).
-    private func drawCropDimming(_ sections: [Section]) {
+    private func drawCropDimming(_ sections: [Section], in drawRect: NSRect) {
         // Translucent dimming reads as a subtle veil; with reduced transparency or
         // increased contrast the trimmed area needs to be unmistakably excluded.
         let alpha: CGFloat = Accessibility.prefersOpaqueOverlays ? 0.85 : 0.55
         NSColor.black.withAlphaComponent(alpha).setFill()
+        if manager?.layout.arrangement == .grid {
+            // Grid cells need not cover the image (gaps in an L-shaped desk, or
+            // the excess trimmed to the desk's aspect), so dim everything outside
+            // the crops rather than only the trim inside each cell.
+            let path = NSBezierPath(rect: drawRect)
+            for s in sections { path.appendRect(arrangedCrop(s.rect, for: s)) }
+            path.windingRule = .evenOdd
+            path.fill()
+            return
+        }
         for s in sections {
             let band = s.rect
             let kept = arrangedCrop(band, for: s)
@@ -401,9 +411,12 @@ final class CanvasNSView: NSView {
     }
 
     private func drawSectionLabels(_ sections: [Section]) {
+        let truncating = NSMutableParagraphStyle()
+        truncating.lineBreakMode = .byTruncatingTail
         let attrs: [NSAttributedString.Key: Any] = [
             .font: Accessibility.font(forTextStyle: .caption1, weight: .semibold),
-            .foregroundColor: NSColor.white
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: truncating
         ]
         // A solid chip behind the label guarantees legible contrast over any
         // image, which a drop shadow alone cannot.
@@ -411,7 +424,13 @@ final class CanvasNSView: NSView {
 
         for s in sections {
             let label = s.name as NSString
-            let sz = label.size(withAttributes: attrs)
+            var sz = label.size(withAttributes: attrs)
+            // Keep each chip inside its own section, truncating the name when a
+            // narrow slice (a laptop beside large displays) cannot fit it, so
+            // neighbouring labels never run into each other.
+            let room = s.rect.width - 12 - 8
+            guard room >= 24 else { continue }
+            sz.width = min(sz.width, room)
             let origin = NSPoint(x: s.rect.midX - sz.width / 2, y: s.rect.minY + 10)
             let chip = NSRect(x: origin.x - 6, y: origin.y - 3, width: sz.width + 12, height: sz.height + 6)
 
@@ -423,7 +442,9 @@ final class CanvasNSView: NSView {
                 NSColor.white.setStroke()
                 border.stroke()
             }
-            label.draw(at: origin, withAttributes: attrs)
+            label.draw(with: NSRect(origin: origin, size: sz),
+                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                       attributes: attrs)
         }
     }
 
