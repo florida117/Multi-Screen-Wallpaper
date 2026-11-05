@@ -286,6 +286,46 @@ public enum WallpaperGeometry {
         }
     }
 
+    // MARK: - Whole-arrangement crops
+
+    /// The splits an apply actually uses: none for a grid, the user's when they
+    /// fit the displays, and the proportional defaults when the count is wrong
+    /// (a display was connected or removed since they were set).
+    public static func effectiveFractions(_ fractions: [CGFloat], orderedFrames: [CGRect],
+                                          arrangement: DisplayArrangement, axis: SplitAxis) -> [CGFloat] {
+        guard arrangement != .grid else { return [] }
+        guard fractions.count == max(orderedFrames.count - 1, 0) else {
+            return defaultFractions(orderedFrames: orderedFrames, arrangement: arrangement, axis: axis)
+        }
+        return fractions
+    }
+
+    /// The part of `imageExtent` each display receives, in span order. This is
+    /// the one place the renderer and the desk preview both take their crops
+    /// from, so the preview shows exactly what an apply will set.
+    ///
+    /// Zoom and pan pick the visible region; splits (or, for a grid, physical
+    /// position) divide it; each piece is then trimmed to `aspects[i]`
+    /// (width / height) and positioned by the arrangement, as `arrangedCrop`
+    /// describes. Returns an empty array if `aspects` does not match the frames.
+    public static func displayCrops(in imageExtent: CGRect, zoom: CGFloat, offset: CGSize,
+                                    arrangement: DisplayArrangement, axis: SplitAxis,
+                                    fractions: [CGFloat], orderedFrames: [CGRect],
+                                    aspects: [CGFloat]) -> [CGRect] {
+        guard !orderedFrames.isEmpty, aspects.count == orderedFrames.count else { return [] }
+        let ext = visibleExtent(imageExtent, zoom: zoom, offset: offset)
+        let union = unionBox(orderedFrames)
+        let cuts: [CGFloat] = [0] + effectiveFractions(fractions, orderedFrames: orderedFrames,
+                                                       arrangement: arrangement, axis: axis) + [1]
+        return orderedFrames.indices.map { i in
+            let slice = arrangement == .grid
+                ? proportionalRect(in: ext, screenFrame: orderedFrames[i], unionBox: union)
+                : sliceRect(in: ext, axis: axis, cuts: cuts, index: i)
+            return arrangedCrop(slice, toAspect: aspects[i], frame: orderedFrames[i],
+                                union: union, arrangement: arrangement)
+        }
+    }
+
     /// The region of `extent` that corresponds to `screenFrame`'s physical position
     /// within `unionBox` — used to span an image across a grid of displays.
     public static func proportionalRect(in extent: CGRect, screenFrame f: CGRect, unionBox u: CGRect) -> CGRect {

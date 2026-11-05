@@ -7,6 +7,9 @@ extension Notification.Name {
     static let savePresetRequested = Notification.Name("savePresetRequested")
 }
 
+/// The main window: a preset library on the left; on the right, the desk
+/// preview of what each display will show, the source image with its split
+/// lines beneath it, and the framing and apply controls along the bottom.
 struct ContentView: View {
     @ObservedObject var manager: WallpaperManager
     @State private var showFilePicker = false
@@ -14,21 +17,19 @@ struct ContentView: View {
     @State private var presetName = ""
 
     var body: some View {
-        VStack(spacing: 0) {
-            toolbar
+        HStack(spacing: 0) {
+            LibrarySidebar(manager: manager,
+                           openImage: { showFilePicker = true },
+                           savePreset: beginSavingPreset)
             Divider()
-            if manager.sourceImage != nil {
-                framingBar
+            VStack(spacing: 0) {
+                deskSection
+                sourceSection
                 Divider()
+                actionBar
             }
-            // No accessibility modifiers here: the canvas builds its own AppKit
-            // accessibility tree (sections and split lines), and a SwiftUI label
-            // would flatten it into a single opaque element.
-            CanvasView(manager: manager)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            statusBar
         }
+        .navigationSubtitle(displaySummary)
         .onReceive(NotificationCenter.default.publisher(for: .openImageRequested)) { _ in
             showFilePicker = true
         }
@@ -54,26 +55,105 @@ struct ContentView: View {
         manager.sourceImage != nil && manager.layout.arrangement != .grid && !manager.isLoading
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 12) {
-            Button("Open Image…") { showFilePicker = true }
-                .help("Open a panoramic image (⌘O)")
-                .accessibilityHint("Choose a wide image to span across your displays")
+    // MARK: Desk
 
-            presetsMenu
+    private var deskSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("On your desk")
+                    .font(.title3.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Text(manager.sourceImage == nil
+                     ? "Open an image to see it on your displays"
+                     : "Laid out as arranged in Displays settings")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            DeskPreviewView(manager: manager)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 18)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .underPageBackgroundColor))
+    }
 
-            Button("Reset Splits") { manager.resetFractions() }
-                .disabled(!canAdjustSplits)
-                .help("Re-space the split lines to match your displays (⌘R)")
-                .accessibilityLabel("Reset split lines")
-                .accessibilityHint("Gives each display a share of the image proportional to its size")
+    // MARK: Source
 
-            Spacer()
+    private var sourceSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(manager.sourceFileName.map { "Source · \($0)" } ?? "Source")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Text(sourceHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Button("Reset Splits") { manager.resetFractions() }
+                    .controlSize(.small)
+                    .disabled(!canAdjustSplits)
+                    .help("Re-space the split lines to match your displays (⌘R)")
+                    .accessibilityLabel("Reset split lines")
+                    .accessibilityHint("Gives each display a share of the image proportional to its size")
+            }
+            // No accessibility modifiers here: the canvas builds its own AppKit
+            // accessibility tree (sections and split lines), and a SwiftUI label
+            // would flatten it into a single opaque element.
+            CanvasView(manager: manager)
+                .frame(height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
+        .background(Color(red: 0.11, green: 0.11, blue: 0.12))
+        .environment(\.colorScheme, .dark)
+    }
+
+    private var sourceHint: String {
+        guard manager.sourceImage != nil else { return "Drop an image here, or open one with ⌘O" }
+        switch manager.layout.arrangement {
+        case .grid:
+            return "Each display shows the region matching its position"
+        case .row, .column:
+            return manager.canPan
+                ? "Drag a split to rebalance · drag the image to reposition"
+                : "Drag a split to rebalance · dimmed areas are trimmed"
+        }
+    }
+
+    // MARK: Action bar
+
+    private var actionBar: some View {
+        HStack(spacing: 14) {
+            Text("Zoom")
+                .accessibilityHidden(true)   // the slider carries its own label
+            Slider(value: $manager.zoom,
+                   in: WallpaperManager.minZoom...WallpaperManager.maxZoom)
+                .frame(width: 140)
+                .disabled(manager.sourceImage == nil)
+                .accessibilityLabel("Zoom")
+                .accessibilityValue(zoomLabel)
+                .help("Zoom into the image (⌘+ / ⌘−)")
+            Text(zoomLabel)
+                .monospacedDigit()
+                .frame(width: 42, alignment: .leading)
+                .accessibilityHidden(true)
+            Button("Fit") { manager.resetFraming() }
+                .disabled(!manager.isFramed)
+                .help("Show the whole image again (⌘0)")
+                .accessibilityHint("Resets zoom and position to show the whole image")
 
             Toggle("Reapply on display change", isOn: $manager.autoReapply)
                 .toggleStyle(.checkbox)
                 .help("Automatically re-apply the wallpaper when displays are connected, disconnected, or rearranged")
-                .accessibilityHint("When on, the wallpaper is re-applied automatically after the display arrangement changes")
+
+            status
+                .frame(maxWidth: .infinity, alignment: .trailing)
 
             if manager.isBusy {
                 ProgressView()
@@ -81,52 +161,63 @@ struct ContentView: View {
                     .accessibilityLabel(manager.isLoading ? "Opening image" : "Applying wallpaper")
             }
 
-            Button("Apply Wallpaper") { manager.applyWallpapers() }
-                .buttonStyle(.borderedProminent)
-                .disabled(manager.sourceImage == nil || manager.isBusy)
-                .help("Render and set the wallpaper on every display (⌘↩)")
-                .accessibilityHint("Renders each display's slice and sets it as the desktop picture")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.bar)
-    }
-
-    // MARK: Presets
-
-    private var presetsMenu: some View {
-        Menu {
-            Button("Save Current…") { beginSavingPreset() }
-                .disabled(manager.sourceImage == nil)
-
-            if !manager.presets.isEmpty {
-                Divider()
-                Section("Load") {
-                    ForEach(manager.presets) { preset in
-                        Button { manager.loadPreset(preset) } label: {
-                            // A preset whose image has moved is kept but marked,
-                            // so it can still be renamed or deleted rather than
-                            // silently vanishing.
-                            Text(preset.isAvailable ? preset.name : "\(preset.name) (missing)")
-                        }
-                    }
-                }
-                Divider()
-                Menu("Delete") {
-                    ForEach(manager.presets) { preset in
-                        Button(preset.name) { manager.deletePreset(preset) }
-                    }
-                }
+            Button {
+                manager.applyWallpapers()
+            } label: {
+                Text(applyTitle)
+                    .fontWeight(.semibold)
+                    .padding(.horizontal, 6)
             }
-        } label: {
-            Text("Presets")
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(manager.sourceImage == nil || manager.isBusy)
+            .help("Render and set the wallpaper on every display (⌘↩)")
+            .accessibilityHint("Renders each display's slice and sets it as the desktop picture")
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("Save the current image, splits and framing, or load a saved one")
-        .accessibilityLabel("Presets")
-        .accessibilityHint("Save the current arrangement, or load a previously saved one")
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
+
+    @ViewBuilder
+    private var status: some View {
+        if !manager.statusMessage.isEmpty {
+            // The icon carries the same success/failure meaning as the colour,
+            // so the state does not depend on distinguishing red from grey.
+            Label(manager.statusMessage,
+                  systemImage: manager.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundColor(manager.isError ? .red : .secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(manager.statusMessage)
+                .accessibilityLabel(manager.isError ? "Error. \(manager.statusMessage)" : manager.statusMessage)
+        } else {
+            Color.clear.frame(height: 1).accessibilityHidden(true)
+        }
+    }
+
+    private var applyTitle: String {
+        let n = max(manager.displayCount, 1)
+        return "Apply to \(n) Display\(n == 1 ? "" : "s")"
+    }
+
+    private var zoomLabel: String {
+        "\(Int((manager.zoom * 100).rounded()))%"
+    }
+
+    private var displaySummary: String {
+        let count = manager.displayCount
+        let noun = "\(count) display\(count == 1 ? "" : "s")"
+        switch manager.layout.arrangement {
+        case .row where count > 1:    return "\(noun) · row"
+        case .column:                 return "\(noun) · column"
+        case .grid:                   return "\(noun) · grid"
+        default:                      return noun
+        }
+    }
+
+    // MARK: Save preset
 
     private func beginSavingPreset() {
         guard manager.sourceImage != nil else { return }
@@ -164,110 +255,5 @@ struct ContentView: View {
     private func commitPreset() {
         manager.savePreset(named: presetName)
         showSavePreset = false
-    }
-
-    // MARK: Framing
-
-    private var framingBar: some View {
-        HStack(spacing: 12) {
-            Text("Zoom")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            Slider(value: $manager.zoom,
-                   in: WallpaperManager.minZoom...WallpaperManager.maxZoom)
-                .frame(width: 180)
-                .accessibilityLabel("Zoom")
-                .accessibilityValue(zoomLabel)
-                .help("Zoom into the image (⌘+ / ⌘−)")
-
-            Text(zoomLabel)
-                .font(.caption.monospacedDigit())
-                .foregroundColor(.secondary)
-                .frame(width: 46, alignment: .leading)
-                .accessibilityHidden(true)   // the slider already reports this
-
-            Button("Fit") { manager.resetFraming() }
-                .disabled(!manager.isFramed)
-                .help("Show the whole image again (⌘0)")
-                .accessibilityHint("Resets zoom and position to show the whole image")
-
-            Spacer()
-
-            if manager.canPan {
-                Text("Drag the image to reposition · ⌥ arrows")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .accessibilityHidden(true)   // duplicated by the canvas help text
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-    }
-
-    private var zoomLabel: String {
-        "\(Int((manager.zoom * 100).rounded()))%"
-    }
-
-    private var statusBar: some View {
-        HStack {
-            if manager.statusMessage.isEmpty {
-                Text(displaySummary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else {
-                // The icon carries the same success/failure meaning as the colour,
-                // so the state does not depend on distinguishing red from grey.
-                Label(manager.statusMessage,
-                      systemImage: manager.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundColor(manager.isError ? .red : .secondary)
-            }
-            Spacer()
-            if manager.sourceImage != nil {
-                Text(hintText)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .frame(minHeight: 28)
-        // Read as one coherent sentence rather than two disconnected fragments.
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(statusAccessibilityLabel)
-    }
-
-    private var statusAccessibilityLabel: String {
-        var parts: [String] = []
-        if manager.statusMessage.isEmpty {
-            parts.append(displaySummary)
-        } else {
-            parts.append(manager.isError ? "Error. \(manager.statusMessage)" : manager.statusMessage)
-        }
-        if manager.sourceImage != nil { parts.append(hintText) }
-        return parts.joined(separator: ". ")
-    }
-
-    private var displaySummary: String {
-        let count = manager.displayCount
-        let noun = "\(count) display\(count == 1 ? "" : "s") detected"
-        switch manager.layout.arrangement {
-        case .row where count > 1:    return "\(noun) · row"
-        case .column:                 return "\(noun) · column"
-        case .grid:                   return "\(noun) · grid"
-        default:                      return noun
-        }
-    }
-
-    private var hintText: String {
-        switch manager.layout.arrangement {
-        case .grid:
-            return "Grid layout — mapped by position · ⌘↩ to apply"
-        case .column:
-            return "Drag or ↑/↓ split lines to adjust · ⌘↩ to apply"
-        case .row:
-            return "Drag or ←/→ split lines to adjust · ⌘↩ to apply"
-        }
     }
 }

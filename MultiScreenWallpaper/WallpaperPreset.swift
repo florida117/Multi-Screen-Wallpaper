@@ -42,13 +42,9 @@ struct WallpaperPreset: Codable, Identifiable, Equatable {
     var imageName: String { imageURL.lastPathComponent }
 }
 
-/// Presets on disk, as JSON in the app's Application Support directory.
-///
-/// Deliberately kept beside the rendered wallpapers: `removeGeneratedWallpapers`
-/// prunes only `png` and `heic`, so this file is not at risk from that sweep.
-enum PresetStore {
-    private static let filename = "presets.json"
-
+/// The app's own folder in Application Support, created on first use. Holds the
+/// preset file and the rendered wallpapers.
+enum AppSupport {
     static func directory() throws -> URL {
         let appSupport = try FileManager.default.url(for: .applicationSupportDirectory,
                                                      in: .userDomainMask,
@@ -57,10 +53,18 @@ enum PresetStore {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
+}
+
+/// Presets on disk, as JSON in the app's Application Support directory.
+///
+/// Safe from the rendered-wallpaper pruning in `WallpaperManager`, which removes
+/// only apply folders under `Rendered/` and loose `png`/`heic` files.
+enum PresetStore {
+    private static let filename = "presets.json"
 
     static func load() -> [WallpaperPreset] {
         do {
-            let url = try directory().appendingPathComponent(filename)
+            let url = try AppSupport.directory().appendingPathComponent(filename)
             guard FileManager.default.fileExists(atPath: url.path) else { return [] }
             let data = try Data(contentsOf: url)
             return try JSONDecoder().decode([WallpaperPreset].self, from: data)
@@ -74,7 +78,7 @@ enum PresetStore {
     @discardableResult
     static func save(_ presets: [WallpaperPreset]) -> Error? {
         do {
-            let url = try directory().appendingPathComponent(filename)
+            let url = try AppSupport.directory().appendingPathComponent(filename)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(presets).write(to: url, options: .atomic)

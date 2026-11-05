@@ -18,10 +18,10 @@ struct MultiScreenWallpaperApp: App {
     var body: some Scene {
         WindowGroup("Multi Screen Wallpaper") {
             ContentView(manager: manager)
-                .frame(minWidth: 800, minHeight: 480)
+                .frame(minWidth: 1040, minHeight: 640)
         }
         .windowStyle(.titleBar)
-        .defaultSize(width: 960, height: 580)
+        .defaultSize(width: 1200, height: 780)
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandGroup(after: .newItem) {
