@@ -7,7 +7,11 @@ struct CanvasView: NSViewRepresentable {
     @ObservedObject var manager: WallpaperManager
 
     func makeNSView(context: Context) -> CanvasNSView {
-        CanvasNSView(manager: manager)
+        let view = CanvasNSView(manager: manager)
+        // The canvas always sits in the window's dark source strip, so its empty
+        // state and drop hint draw dark whatever the system appearance.
+        view.appearance = NSAppearance(named: .darkAqua)
+        return view
     }
 
     func updateNSView(_ nsView: CanvasNSView, context: Context) {
@@ -125,7 +129,7 @@ final class CanvasNSView: NSView {
         drawPreview(of: image, in: drawRect)
 
         let sections = sectionBands(in: drawRect)
-        drawCropDimming(sections)
+        drawCropDimming(sections, in: drawRect)
 
         switch manager?.layout.arrangement ?? .row {
         case .row, .column:
@@ -171,9 +175,16 @@ final class CanvasNSView: NSView {
     /// the zoom — capped, so a deep zoom in a large window cannot allocate an
     /// unbounded bitmap. Panning does not change this size, which is what keeps a
     /// pan drag on the cached raster instead of re-rendering every frame.
+    ///
+    /// The zoom is rounded *up* to the next step of a factor of √2 for the same
+    /// reason: a pinch or slider drag changes zoom continuously, and sizing the
+    /// raster to the exact zoom would re-render the full-resolution image on
+    /// every event. Rounding up means the raster never has less detail than the
+    /// screen needs; it is at most √2 larger.
     private func previewRasterSize(for fitSize: NSSize, zoom: CGFloat) -> NSSize {
         let maxDimension: CGFloat = 4096
-        let target = NSSize(width: fitSize.width * zoom, height: fitSize.height * zoom)
+        let steppedZoom = pow(2, (log2(max(zoom, 1)) * 2 - 1e-6).rounded(.up) / 2)
+        let target = NSSize(width: fitSize.width * steppedZoom, height: fitSize.height * steppedZoom)
         let overshoot = max(target.width, target.height) / maxDimension
         guard overshoot > 1 else { return target }
         return NSSize(width: target.width / overshoot, height: target.height / overshoot)
@@ -257,34 +268,21 @@ final class CanvasNSView: NSView {
 
         func aspect(_ i: Int) -> CGFloat { i < slots.count ? slots[i].aspect : drawRect.width / drawRect.height }
 
+        // The same geometry calls the renderer makes, applied to the canvas rect
+        // instead of the image extent, so the preview cannot drift from the output.
         switch mgr.layout.arrangement {
-        case .row:
+        case .row, .column:
             let cuts: [CGFloat] = [0] + mgr.splitFractions + [1]
             return (0..<cuts.count - 1).map { i in
-                let xL = drawRect.minX + drawRect.width * cuts[i]
-                let xR = drawRect.minX + drawRect.width * cuts[i + 1]
-                return Section(rect: NSRect(x: xL, y: drawRect.minY, width: xR - xL, height: drawRect.height),
-                               aspect: aspect(i), name: sectionName(i), frame: mgr.frame(forSlot: i))
-            }
-        case .column:
-            let cuts: [CGFloat] = [0] + mgr.splitFractions + [1]
-            return (0..<cuts.count - 1).map { i in
-                let yTop = drawRect.maxY - drawRect.height * cuts[i]      // cut 0 = top of image
-                let yBot = drawRect.maxY - drawRect.height * cuts[i + 1]
-                return Section(rect: NSRect(x: drawRect.minX, y: yBot, width: drawRect.width, height: yTop - yBot),
-                               aspect: aspect(i), name: sectionName(i), frame: mgr.frame(forSlot: i))
+                Section(rect: WallpaperGeometry.sliceRect(in: drawRect, axis: mgr.layout.axis, cuts: cuts, index: i),
+                        aspect: aspect(i), name: sectionName(i), frame: mgr.frame(forSlot: i))
             }
         case .grid:
             let u = mgr.unionBox
             guard u.width > 0, u.height > 0 else { return [] }
             return slots.enumerated().map { (i, slot) in
-                let f = slot.frame
-                let nx = (f.minX - u.minX) / u.width, ny = (f.minY - u.minY) / u.height
-                let rect = NSRect(x: drawRect.minX + nx * drawRect.width,
-                                  y: drawRect.minY + ny * drawRect.height,
-                                  width:  (f.width / u.width) * drawRect.width,
-                                  height: (f.height / u.height) * drawRect.height)
-                return Section(rect: rect, aspect: slot.aspect, name: sectionName(i), frame: f)
+                Section(rect: WallpaperGeometry.gridCell(in: drawRect, screenFrame: slot.frame, unionBox: u),
+                        aspect: slot.aspect, name: sectionName(i), frame: slot.frame)
             }
         }
     }
@@ -299,11 +297,21 @@ final class CanvasNSView: NSView {
 
     /// Dim the parts of each section that will be cropped away, so the preview
     /// shows exactly what lands on each display (mirrors WallpaperGeometry.alignedCrop).
-    private func drawCropDimming(_ sections: [Section]) {
+    private func drawCropDimming(_ sections: [Section], in drawRect: NSRect) {
         // Translucent dimming reads as a subtle veil; with reduced transparency or
         // increased contrast the trimmed area needs to be unmistakably excluded.
         let alpha: CGFloat = Accessibility.prefersOpaqueOverlays ? 0.85 : 0.55
         NSColor.black.withAlphaComponent(alpha).setFill()
+        if manager?.layout.arrangement == .grid {
+            // Grid cells need not cover the image (gaps in an L-shaped desk, or
+            // the excess trimmed to the desk's aspect), so dim everything outside
+            // the crops rather than only the trim inside each cell.
+            let path = NSBezierPath(rect: drawRect)
+            for s in sections { path.appendRect(arrangedCrop(s.rect, for: s)) }
+            path.windingRule = .evenOdd
+            path.fill()
+            return
+        }
         for s in sections {
             let band = s.rect
             let kept = arrangedCrop(band, for: s)
@@ -403,9 +411,12 @@ final class CanvasNSView: NSView {
     }
 
     private func drawSectionLabels(_ sections: [Section]) {
+        let truncating = NSMutableParagraphStyle()
+        truncating.lineBreakMode = .byTruncatingTail
         let attrs: [NSAttributedString.Key: Any] = [
             .font: Accessibility.font(forTextStyle: .caption1, weight: .semibold),
-            .foregroundColor: NSColor.white
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: truncating
         ]
         // A solid chip behind the label guarantees legible contrast over any
         // image, which a drop shadow alone cannot.
@@ -413,7 +424,13 @@ final class CanvasNSView: NSView {
 
         for s in sections {
             let label = s.name as NSString
-            let sz = label.size(withAttributes: attrs)
+            var sz = label.size(withAttributes: attrs)
+            // Keep each chip inside its own section, truncating the name when a
+            // narrow slice (a laptop beside large displays) cannot fit it, so
+            // neighbouring labels never run into each other.
+            let room = s.rect.width - 12 - 8
+            guard room >= 24 else { continue }
+            sz.width = min(sz.width, room)
             let origin = NSPoint(x: s.rect.midX - sz.width / 2, y: s.rect.minY + 10)
             let chip = NSRect(x: origin.x - 6, y: origin.y - 3, width: sz.width + 12, height: sz.height + 6)
 
@@ -425,7 +442,9 @@ final class CanvasNSView: NSView {
                 NSColor.white.setStroke()
                 border.stroke()
             }
-            label.draw(at: origin, withAttributes: attrs)
+            label.draw(with: NSRect(origin: origin, size: sz),
+                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                       attributes: attrs)
         }
     }
 

@@ -133,8 +133,9 @@ public enum WallpaperGeometry {
 
     /// Classify how the given display frames are arranged (global coordinates, Y-up).
     ///
-    /// A row is detected when the displays' widths tile horizontally while sharing a
-    /// common vertical band; a column is the transpose. Anything else is a grid.
+    /// A row is detected when the displays' widths tile horizontally, whether or
+    /// not they share a common vertical band; a column is the transpose. Anything
+    /// else is a grid.
     public static func analyzeLayout(frames: [CGRect]) -> DisplayLayout {
         let indices = Array(frames.indices)
         guard frames.count > 1 else {
@@ -156,8 +157,12 @@ public enum WallpaperGeometry {
         let tilesVertically   = approx(u.height, sumH, dim: u.height)
         let sharesHorizontally = approx(u.width, maxW, dim: u.width)
 
-        let isRow    = tilesHorizontally && sharesVertically
-        let isColumn = tilesVertically && sharesHorizontally
+        // Side by side with no overlap is a row even when the displays are
+        // staggered vertically (a laptop sitting below its external displays,
+        // say): `arrangedCrop` keeps the image continuous across the stagger.
+        // Sharing a band only breaks the tie when the frames tile both ways.
+        let isRow    = tilesHorizontally && (sharesVertically || !tilesVertically)
+        let isColumn = tilesVertically && (sharesHorizontally || !tilesHorizontally)
 
         let leftToRight = indices.sorted { frames[$0].minX < frames[$1].minX }
         // Top of the image maps to the physically highest display (largest maxY).
@@ -286,8 +291,59 @@ public enum WallpaperGeometry {
         }
     }
 
+    // MARK: - Whole-arrangement crops
+
+    /// The splits an apply actually uses: none for a grid, the user's when they
+    /// fit the displays, and the proportional defaults when the count is wrong
+    /// (a display was connected or removed since they were set).
+    public static func effectiveFractions(_ fractions: [CGFloat], orderedFrames: [CGRect],
+                                          arrangement: DisplayArrangement, axis: SplitAxis) -> [CGFloat] {
+        guard arrangement != .grid else { return [] }
+        guard fractions.count == max(orderedFrames.count - 1, 0) else {
+            return defaultFractions(orderedFrames: orderedFrames, arrangement: arrangement, axis: axis)
+        }
+        return fractions
+    }
+
+    /// The part of `imageExtent` each display receives, in span order. This is
+    /// the one place the renderer and the desk preview both take their crops
+    /// from, so the preview shows exactly what an apply will set.
+    ///
+    /// Zoom and pan pick the visible region; splits (or, for a grid, physical
+    /// position) divide it; each piece is then trimmed to `aspects[i]`
+    /// (width / height) and positioned by the arrangement, as `arrangedCrop`
+    /// describes. Returns an empty array if `aspects` does not match the frames.
+    public static func displayCrops(in imageExtent: CGRect, zoom: CGFloat, offset: CGSize,
+                                    arrangement: DisplayArrangement, axis: SplitAxis,
+                                    fractions: [CGFloat], orderedFrames: [CGRect],
+                                    aspects: [CGFloat]) -> [CGRect] {
+        guard !orderedFrames.isEmpty, aspects.count == orderedFrames.count else { return [] }
+        let ext = visibleExtent(imageExtent, zoom: zoom, offset: offset)
+        let union = unionBox(orderedFrames)
+        let cuts: [CGFloat] = [0] + effectiveFractions(fractions, orderedFrames: orderedFrames,
+                                                       arrangement: arrangement, axis: axis) + [1]
+        return orderedFrames.indices.map { i in
+            let slice = arrangement == .grid
+                ? gridCell(in: ext, screenFrame: orderedFrames[i], unionBox: union)
+                : sliceRect(in: ext, axis: axis, cuts: cuts, index: i)
+            return arrangedCrop(slice, toAspect: aspects[i], frame: orderedFrames[i],
+                                union: union, arrangement: arrangement)
+        }
+    }
+
+    /// The region of `extent` a grid display receives. The union box is first
+    /// fitted to `extent` at its own aspect (trimming the image's excess, centred),
+    /// so every display samples the image at the same scale on both axes and a
+    /// feature crossing any seam stays continuous. Mapping the union straight onto
+    /// the extent instead would stretch one axis whenever their aspects differ.
+    public static func gridCell(in extent: CGRect, screenFrame f: CGRect, unionBox u: CGRect) -> CGRect {
+        guard u.width > 0, u.height > 0 else { return extent }
+        let region = centerCrop(extent, toAspect: u.width / u.height)
+        return proportionalRect(in: region, screenFrame: f, unionBox: u)
+    }
+
     /// The region of `extent` that corresponds to `screenFrame`'s physical position
-    /// within `unionBox` — used to span an image across a grid of displays.
+    /// within `unionBox`, scaled independently on each axis.
     public static func proportionalRect(in extent: CGRect, screenFrame f: CGRect, unionBox u: CGRect) -> CGRect {
         guard u.width > 0, u.height > 0 else { return extent }
         let nx = (f.minX - u.minX) / u.width

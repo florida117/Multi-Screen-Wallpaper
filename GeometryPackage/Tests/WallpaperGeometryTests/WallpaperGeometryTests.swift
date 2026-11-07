@@ -452,4 +452,115 @@ final class WallpaperGeometryTests: XCTestCase {
         XCTAssertEqual(mapped.height, 1000, accuracy: 1e-6)  // half of 2000
         XCTAssertEqual(mapped.minY, 1000, accuracy: 1e-6)    // top half (Y-up)
     }
+
+
+    // MARK: displayCrops (shared by the renderer and the desk preview)
+
+    func testDisplayCropsRowUnzoomedFillsEachSliceWhenAspectsMatch() {
+        // Two 1600×900 displays side by side; a 3200×900 image fits them exactly.
+        let frames = [CGRect(x: 0, y: 0, width: 1600, height: 900),
+                      CGRect(x: 1600, y: 0, width: 1600, height: 900)]
+        let crops = WallpaperGeometry.displayCrops(
+            in: CGRect(x: 0, y: 0, width: 3200, height: 900), zoom: 1, offset: .zero,
+            arrangement: .row, axis: .horizontal, fractions: [0.5],
+            orderedFrames: frames, aspects: [16.0 / 9.0, 16.0 / 9.0])
+        XCTAssertEqual(crops.count, 2)
+        XCTAssertEqual(crops[0], CGRect(x: 0, y: 0, width: 1600, height: 900))
+        XCTAssertEqual(crops[1], CGRect(x: 1600, y: 0, width: 1600, height: 900))
+    }
+
+    func testDisplayCropsFallsBackToProportionalSplitsWhenCountIsWrong() {
+        let frames = [CGRect(x: 0, y: 0, width: 3000, height: 1000),
+                      CGRect(x: 3000, y: 0, width: 1000, height: 1000)]
+        let crops = WallpaperGeometry.displayCrops(
+            in: CGRect(x: 0, y: 0, width: 4000, height: 1000), zoom: 1, offset: .zero,
+            arrangement: .row, axis: .horizontal, fractions: [0.2, 0.4],   // stale: three displays' worth
+            orderedFrames: frames, aspects: [3, 1])
+        // Proportional: 3000/4000 of the width to the first display.
+        XCTAssertEqual(crops[0].width, 3000, accuracy: 1e-6)
+        XCTAssertEqual(crops[1].minX, 3000, accuracy: 1e-6)
+    }
+
+    func testDisplayCropsHonoursZoom() {
+        let frames = [CGRect(x: 0, y: 0, width: 1000, height: 1000)]
+        let crops = WallpaperGeometry.displayCrops(
+            in: CGRect(x: 0, y: 0, width: 1000, height: 1000), zoom: 2, offset: .zero,
+            arrangement: .row, axis: .horizontal, fractions: [],
+            orderedFrames: frames, aspects: [1])
+        XCTAssertEqual(crops, [CGRect(x: 250, y: 250, width: 500, height: 500)])
+    }
+
+    func testDisplayCropsGridIgnoresSplitsAndMapsByPosition() {
+        let frames = [CGRect(x: 0, y: 1000, width: 2000, height: 1000),
+                      CGRect(x: 2000, y: 1000, width: 2000, height: 1000),
+                      CGRect(x: 0, y: 0, width: 2000, height: 1000),
+                      CGRect(x: 2000, y: 0, width: 2000, height: 1000)]
+        let crops = WallpaperGeometry.displayCrops(
+            in: CGRect(x: 0, y: 0, width: 4000, height: 2000), zoom: 1, offset: .zero,
+            arrangement: .grid, axis: .horizontal, fractions: [0.1, 0.2, 0.3],
+            orderedFrames: frames, aspects: [2, 2, 2, 2])
+        XCTAssertEqual(crops[1], CGRect(x: 2000, y: 1000, width: 2000, height: 1000))
+        XCTAssertEqual(crops[2], CGRect(x: 0, y: 0, width: 2000, height: 1000))
+    }
+
+    func testDisplayCropsRejectsMismatchedAspects() {
+        let crops = WallpaperGeometry.displayCrops(
+            in: CGRect(x: 0, y: 0, width: 100, height: 100), zoom: 1, offset: .zero,
+            arrangement: .row, axis: .horizontal, fractions: [],
+            orderedFrames: [CGRect(x: 0, y: 0, width: 10, height: 10)], aspects: [])
+        XCTAssertEqual(crops, [])
+    }
+
+    // MARK: staggered rows and uniform grids
+
+    func testStaggeredRowIsARow() {
+        // A 14" MacBook Pro left of two Studio Displays, sitting 288pt lower.
+        let frames = [CGRect(x: 0, y: 0, width: 2048, height: 1152),
+                      CGRect(x: 2048, y: 0, width: 2048, height: 1152),
+                      CGRect(x: -1512, y: -288, width: 1512, height: 982)]
+        let layout = WallpaperGeometry.analyzeLayout(frames: frames)
+        XCTAssertEqual(layout.arrangement, .row)
+        XCTAssertEqual(layout.order, [2, 0, 1])
+    }
+
+    func testStaggeredColumnIsAColumn() {
+        let frames = [CGRect(x: 0, y: 0, width: 1920, height: 1080),
+                      CGRect(x: 600, y: 1080, width: 1920, height: 1080)]
+        XCTAssertEqual(WallpaperGeometry.analyzeLayout(frames: frames).arrangement, .column)
+    }
+
+    func testCornerToCornerDisplaysAreAGrid() {
+        // Tiles both ways and shares neither band: no axis to split along.
+        let frames = [CGRect(x: 0, y: 0, width: 1920, height: 1080),
+                      CGRect(x: 1920, y: 1080, width: 1920, height: 1080)]
+        XCTAssertEqual(WallpaperGeometry.analyzeLayout(frames: frames).arrangement, .grid)
+    }
+
+    func testLShapedDeskIsAGrid() {
+        let frames = [CGRect(x: 0, y: 1080, width: 1920, height: 1080),
+                      CGRect(x: 0, y: 0, width: 1920, height: 1080),
+                      CGRect(x: 1920, y: 0, width: 1920, height: 1080)]
+        XCTAssertEqual(WallpaperGeometry.analyzeLayout(frames: frames).arrangement, .grid)
+    }
+
+    func testGridCropsShareOneScaleWhenImageAspectDiffers() {
+        // An L-shaped desk (union 3840×2160, 16:9) under a 4:3 image: every
+        // crop must keep its display's aspect untrimmed and sample at one rate.
+        let frames = [CGRect(x: 0, y: 1080, width: 1920, height: 1080),
+                      CGRect(x: 0, y: 0, width: 1920, height: 1080),
+                      CGRect(x: 1920, y: 0, width: 1920, height: 1080)]
+        let crops = WallpaperGeometry.displayCrops(
+            in: CGRect(x: 0, y: 0, width: 4000, height: 3000), zoom: 1, offset: .zero,
+            arrangement: .grid, axis: .horizontal, fractions: [],
+            orderedFrames: frames, aspects: [16.0 / 9.0, 16.0 / 9.0, 16.0 / 9.0])
+        for crop in crops {
+            XCTAssertEqual(crop.width, 2000, accuracy: 1e-6)
+            XCTAssertEqual(crop.height, 1125, accuracy: 1e-6)
+        }
+        // Seams line up: the top display sits directly on the bottom-left one,
+        // and the bottom pair share an edge, all inside the centred 16:9 band.
+        XCTAssertEqual(crops[0].minY, crops[1].maxY, accuracy: 1e-6)
+        XCTAssertEqual(crops[2].minX, crops[1].maxX, accuracy: 1e-6)
+        XCTAssertEqual(crops[1].minY, 375, accuracy: 1e-6)
+    }
 }

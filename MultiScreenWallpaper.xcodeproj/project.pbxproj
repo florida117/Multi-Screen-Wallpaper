@@ -14,6 +14,8 @@
 		BB000009000000000000000A /* Accessibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000009000000000000000A /* Accessibility.swift */; };
 		BB00000A000000000000000A /* WallpaperPreset.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000A000000000000000A /* WallpaperPreset.swift */; };
 		BB000006000000000000000A /* WallpaperGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000008000000000000000A /* WallpaperGeometry.swift */; };
+		BB00000B000000000000000A /* DeskPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000B000000000000000A /* DeskPreviewView.swift */; };
+		BB00000C000000000000000A /* LibrarySidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000C000000000000000A /* LibrarySidebar.swift */; };
 		BB000005000000000000000A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA000006000000000000000A /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -26,6 +28,8 @@
 		AA000009000000000000000A /* Accessibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Accessibility.swift; sourceTree = "<group>"; };
 		AA00000A000000000000000A /* WallpaperPreset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperPreset.swift; sourceTree = "<group>"; };
 		AA000008000000000000000A /* WallpaperGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperGeometry.swift; sourceTree = "<group>"; };
+		AA00000B000000000000000A /* DeskPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeskPreviewView.swift; sourceTree = "<group>"; };
+		AA00000C000000000000000A /* LibrarySidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebar.swift; sourceTree = "<group>"; };
 		AA000005000000000000000A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA000006000000000000000A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA000007000000000000000A /* MultiScreenWallpaper.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MultiScreenWallpaper.entitlements; sourceTree = "<group>"; };
@@ -68,6 +72,8 @@
 				AA000009000000000000000A /* Accessibility.swift */,
 				AA00000A000000000000000A /* WallpaperPreset.swift */,
 				AA000008000000000000000A /* WallpaperGeometry.swift */,
+				AA00000B000000000000000A /* DeskPreviewView.swift */,
+				AA00000C000000000000000A /* LibrarySidebar.swift */,
 				AA000006000000000000000A /* Assets.xcassets */,
 				AA000005000000000000000A /* Info.plist */,
 				AA000007000000000000000A /* MultiScreenWallpaper.entitlements */,
@@ -151,6 +157,8 @@
 				BB000009000000000000000A /* Accessibility.swift in Sources */,
 				BB00000A000000000000000A /* WallpaperPreset.swift in Sources */,
 				BB000006000000000000000A /* WallpaperGeometry.swift in Sources */,
+				BB00000B000000000000000A /* DeskPreviewView.swift in Sources */,
+				BB00000C000000000000000A /* LibrarySidebar.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
