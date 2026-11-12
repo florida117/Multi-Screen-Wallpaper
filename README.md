@@ -4,31 +4,22 @@ A native Apple Silicon Mac app that spans a panoramic image across multiple disp
 
 ## Installation
 
-Download the [**latest MultiScreenWallpaper.dmg**](../../releases/latest/download/MultiScreenWallpaper.dmg) — currently **v1.4** — open it, and drag **MultiScreenWallpaper** to your Applications folder. See all versions on the [Releases](../../releases) page.
+Download the [**latest MultiScreenWallpaper.dmg**](../../releases/latest/download/MultiScreenWallpaper.dmg) — currently **v1.5** — open it, and drag **MultiScreenWallpaper** to your Applications folder. See all versions on the [Releases](../../releases) page.
 
 The download is Developer ID signed, notarized and stapled, so it opens without security prompts.
 
-## What's new in 1.4
+## What's new in 1.5
 
-- **Proportional split defaults** — each display now starts with a share of the image proportional to its own size, so a wide screen beside a narrow one samples the image at the same rate and the panorama no longer steps in scale at the seam
-- **Arrangement-aware cropping** — each display's slice is positioned to match where that display physically sits in System Settings › Displays › Arrange, so a horizon crossing the bezel stays level when one monitor is mounted higher than its neighbour
-- **Zoom and reposition** — zoom into the image and drag it to choose exactly which part gets spanned, instead of always taking the centre. Pinch or use ⌘+ / ⌘− and ⌘0, drag the image or nudge it with ⌥ arrows
-- **Presets** — save an image together with its split positions, zoom and position, and reload it later from the Presets menu (⌘S to save)
-- **New app icon** — built from SF Symbols, with the generator included in `Tools/`
-- **Now MIT licensed**
-
-See the [v1.4 release notes](../../releases/tag/v1.4) for the full list.
-
-## On `main` since 1.4
-
-Not yet in a release:
-
-- **Desk preview** — the main window now shows every display where it sits in System Settings › Displays, each showing exactly the part of the image an apply will give it, drawn with the device's own artwork when macOS has it (Studio Display, Pro Display XDR, the Mac's built-in panel)
+- **Desk preview** — the main window shows every display where it sits in System Settings › Displays, each showing exactly the part of the image an apply will give it, drawn with the device's own artwork when macOS has it (Studio Display, Pro Display XDR, the Mac's built-in panel)
 - **Preset library** — presets appear as thumbnail cards in a sidebar, with rename and delete
 - **Staggered displays count as a row** — a laptop sitting below or beside its external displays gets split lines instead of grid mapping
 - **Grid crops keep one scale** — every display in a grid samples the image at the same rate, so features crossing a seam stay continuous
+- **Wallpaper refreshes reliably** — each apply gets fresh files, so re-applying after moving a split always takes effect, and other Spaces keep their wallpaper
 - **Auto-reapply survives a relaunch** — and only ever re-applies the image that is actually on the wall, never one you have opened but not applied
+- **Cleaner seams and more formats** — no faint line at the join between displays, and greyscale and CMYK images now apply correctly
 - **⌘= zooms in** as well as ⌘+
+
+See the [v1.5 release notes](../../releases/tag/v1.5) for the full list, or the [v1.4 notes](../../releases/tag/v1.4) for proportional splits, arrangement-aware cropping, zoom and presets.
 
 ## Requirements
 
