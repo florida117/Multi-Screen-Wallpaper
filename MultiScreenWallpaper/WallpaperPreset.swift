@@ -37,8 +37,8 @@ struct WallpaperPreset: Codable, Identifiable, Equatable {
     /// False once the underlying image has been moved or deleted.
     var isAvailable: Bool { FileManager.default.fileExists(atPath: imagePath) }
 
-    /// Shown beneath the name so two presets built from different images are
-    /// distinguishable even when named similarly.
+    /// Named in the message shown when the image is missing, so the user knows
+    /// which file to put back.
     var imageName: String { imageURL.lastPathComponent }
 }
 
@@ -60,28 +60,58 @@ enum AppSupport {
 /// Safe from the rendered-wallpaper pruning in `WallpaperManager`, which removes
 /// only apply folders under `Rendered/` and loose `png`/`heic` files.
 enum PresetStore {
-    private static let filename = "presets.json"
+    static let filename = "presets.json"
 
-    static func load() -> [WallpaperPreset] {
+    /// Saved presets, plus where an unreadable file was moved to, if there was one.
+    struct LoadResult {
+        var presets: [WallpaperPreset]
+        var setAside: URL?
+    }
+
+    static func load() -> LoadResult {
+        guard let dir = try? AppSupport.directory() else { return LoadResult(presets: []) }
+        return load(in: dir)
+    }
+
+    /// Read the presets in `directory`.
+    ///
+    /// A file that exists but cannot be decoded (damaged, or written by a newer
+    /// version) must not stop the app launching, so the user starts from an empty
+    /// list. It is renamed out of the way first: otherwise the next save would
+    /// overwrite it and the presets would be lost for good.
+    static func load(in directory: URL) -> LoadResult {
+        let url = directory.appendingPathComponent(filename)
+        guard FileManager.default.fileExists(atPath: url.path) else { return LoadResult(presets: []) }
         do {
-            let url = try AppSupport.directory().appendingPathComponent(filename)
-            guard FileManager.default.fileExists(atPath: url.path) else { return [] }
             let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode([WallpaperPreset].self, from: data)
+            return LoadResult(presets: try JSONDecoder().decode([WallpaperPreset].self, from: data))
         } catch {
-            // A corrupt or unreadable preset file must not stop the app launching;
-            // the user simply starts from an empty list.
-            return []
+            let stamp = Int(Date().timeIntervalSince1970)
+            let backup = directory.appendingPathComponent("presets.unreadable-\(stamp).json")
+            do {
+                try FileManager.default.moveItem(at: url, to: backup)
+                return LoadResult(presets: [], setAside: backup)
+            } catch {
+                return LoadResult(presets: [])
+            }
         }
     }
 
     @discardableResult
     static func save(_ presets: [WallpaperPreset]) -> Error? {
         do {
-            let url = try AppSupport.directory().appendingPathComponent(filename)
+            return save(presets, in: try AppSupport.directory())
+        } catch {
+            return error
+        }
+    }
+
+    @discardableResult
+    static func save(_ presets: [WallpaperPreset], in directory: URL) -> Error? {
+        do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(presets).write(to: url, options: .atomic)
+            try encoder.encode(presets).write(to: directory.appendingPathComponent(filename), options: .atomic)
             return nil
         } catch {
             return error

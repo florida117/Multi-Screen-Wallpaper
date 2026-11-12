@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests (geometry and preset store)
+        run: swift test --package-path GeometryPackage
+
+      - name: Build the app (unsigned)
+        run: |
+          xcodebuild -project MultiScreenWallpaper.xcodeproj \
+            -target MultiScreenWallpaper -configuration Release \
+            CODE_SIGNING_ALLOWED=NO build

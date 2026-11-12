@@ -157,6 +157,7 @@ struct LibrarySidebar: View {
 
 /// Small thumbnails of preset images, made off the main thread with ImageIO
 /// (which reads only what it needs from the file) and kept for the session.
+@MainActor
 final class PresetThumbnails: ObservableObject {
     @Published private(set) var images: [String: CGImage] = [:]
     private var requested: Set<String> = []

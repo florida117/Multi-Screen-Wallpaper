@@ -357,6 +357,7 @@ struct DeviceArtwork {
     }
 
     /// The artwork for `slot`'s device, if macOS has one that fits it.
+    @MainActor
     static func forSlot(_ slot: SpanSlot) -> DeviceArtwork? {
         guard let type = deviceType(for: slot), let artwork = measured(type) else { return nil }
         // The crop is drawn into the artwork's screen; a different shape would
@@ -407,9 +408,11 @@ struct DeviceArtwork {
 
     // MARK: Measuring the artwork
 
-    /// Measurements per device type. Only touched from the main thread (views).
+    /// Measurements per device type, filled in by the views on the main thread.
+    @MainActor
     private static var cache: [String: DeviceArtwork?] = [:]
 
+    @MainActor
     private static func measured(_ type: UTType) -> DeviceArtwork? {
         if let cached = cache[type.identifier] { return cached }
         let artwork = measure(type)

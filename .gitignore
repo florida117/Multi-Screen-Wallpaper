@@ -15,3 +15,6 @@ DerivedData/
 # Swift Package Manager (GeometryPackage tests)
 .build/
 .swiftpm/
+
+# Release disk images are attached to GitHub Releases, not committed
+*.dmg

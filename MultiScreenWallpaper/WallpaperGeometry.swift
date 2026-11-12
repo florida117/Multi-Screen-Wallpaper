@@ -8,7 +8,7 @@ import Foundation
 // directly (see the WallpaperGeometryTests SwiftPM package).
 
 /// The axis along which a panorama is divided between displays.
-public enum SplitAxis: Equatable {
+public enum SplitAxis: Equatable, Sendable {
     /// Displays sit in a left-to-right row; the image is divided by vertical cuts.
     case horizontal
     /// Displays are stacked top-to-bottom; the image is divided by horizontal cuts.
@@ -16,7 +16,7 @@ public enum SplitAxis: Equatable {
 }
 
 /// How the connected displays are physically arranged on the desk.
-public enum DisplayArrangement: Equatable {
+public enum DisplayArrangement: Equatable, Sendable {
     /// A clean horizontal row — divide the image with draggable vertical split lines.
     case row
     /// A clean vertical column — divide the image with draggable horizontal split lines.
@@ -27,7 +27,7 @@ public enum DisplayArrangement: Equatable {
 }
 
 /// The result of classifying a set of display frames.
-public struct DisplayLayout: Equatable {
+public struct DisplayLayout: Equatable, Sendable {
     public let arrangement: DisplayArrangement
     /// The dominant split axis. Meaningful for `.row`/`.column`; `.horizontal`
     /// as a placeholder for `.grid` (which doesn't use split lines).
