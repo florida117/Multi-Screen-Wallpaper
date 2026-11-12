@@ -101,7 +101,7 @@ final class CanvasNSView: NSView {
     override func becomeFirstResponder() -> Bool {
         // Give Full Keyboard Access users something to act on immediately rather
         // than requiring a blind first arrow press to reveal a selection.
-        if selectedIndex == nil, let mgr = mgr(supportsSplits: true), !mgr.splitFractions.isEmpty {
+        if selectedIndex == nil, let mgr = splitManager, !mgr.splitFractions.isEmpty {
             selectedIndex = 0
         }
         needsDisplay = true
@@ -296,7 +296,8 @@ final class CanvasNSView: NSView {
     }
 
     /// Dim the parts of each section that will be cropped away, so the preview
-    /// shows exactly what lands on each display (mirrors WallpaperGeometry.alignedCrop).
+    /// shows exactly what lands on each display (the same WallpaperGeometry.arrangedCrop
+    /// the renderer uses).
     private func drawCropDimming(_ sections: [Section], in drawRect: NSRect) {
         // Translucent dimming reads as a subtle veil; with reduced transparency or
         // increased contrast the trimmed area needs to be unmistakably excluded.
@@ -546,7 +547,7 @@ final class CanvasNSView: NSView {
             return
         }
 
-        guard let mgr = mgr(supportsSplits: true), !mgr.splitFractions.isEmpty else {
+        guard let mgr = splitManager, !mgr.splitFractions.isEmpty else {
             super.keyDown(with: event); return
         }
         let step: CGFloat = event.modifierFlags.contains(.shift) ? 0.05 : 0.01
@@ -649,10 +650,10 @@ final class CanvasNSView: NSView {
 
     // MARK: Helpers
 
-    /// The manager, but only when the current arrangement uses draggable splits.
-    private func mgr(supportsSplits: Bool) -> WallpaperManager? {
-        guard let mgr = manager, mgr.sourceImage != nil else { return nil }
-        if supportsSplits, mgr.layout.arrangement == .grid { return nil }
+    /// The manager, but only when an image is open and the current arrangement
+    /// uses draggable splits.
+    private var splitManager: WallpaperManager? {
+        guard let mgr = manager, mgr.sourceImage != nil, mgr.layout.arrangement != .grid else { return nil }
         return mgr
     }
 
@@ -793,6 +794,12 @@ final class CanvasNSView: NSView {
         return mgr.splitFractions[index]
     }
 
+    /// Which arrow keys move a split line: they run along the split axis.
+    func accessibilityHelpForSplit() -> String {
+        let keys = manager?.layout.axis == .vertical ? "Up and Down" : "Left and Right"
+        return "Adjust with Control Option \(keys), or select this split line on the canvas and use the arrow keys."
+    }
+
     func accessibilityLabelForSplit(index: Int) -> String {
         "Split line between \(sectionName(index)) and \(sectionName(index + 1))"
     }
@@ -920,9 +927,7 @@ final class SplitLineAccessibilityElement: NSAccessibilityElement {
         return NSNumber(value: Accessibility.percent(canvas.splitUpperBound(index)))
     }
 
-    override func accessibilityHelp() -> String? {
-        "Adjust with Control Option Left and Right, or select this split line on the canvas and use the arrow keys."
-    }
+    override func accessibilityHelp() -> String? { canvas?.accessibilityHelpForSplit() }
 
     override func setAccessibilityFocused(_ accessibilityFocused: Bool) {
         super.setAccessibilityFocused(accessibilityFocused)

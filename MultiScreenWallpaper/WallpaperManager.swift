@@ -13,6 +13,10 @@ struct SpanSlot: Equatable {
     let displayID: CGDirectDisplayID?
 }
 
+/// Main-actor isolated: it drives the UI and talks to AppKit. The work that runs
+/// in the background (decoding and rendering) lives in `nonisolated static`
+/// helpers that touch none of its state.
+@MainActor
 final class WallpaperManager: ObservableObject {
     @Published var sourceImage: NSImage?
     /// A flat, downsampled raster of the source for SwiftUI previews. The source
@@ -85,7 +89,13 @@ final class WallpaperManager: ObservableObject {
     @Published var autoReapply: Bool = true { didSet { UserDefaults.standard.set(autoReapply, forKey: Keys.autoReapply) } }
 
     private var sourceURL: URL?
-    private var hasApplied = false
+    /// The image most recently set as the wallpaper. Persisted, so a display
+    /// change after a relaunch is still re-applied, and compared with the open
+    /// image, so a reconfiguration never applies an image the user has only
+    /// opened and not yet applied.
+    private var appliedImagePath: String? {
+        didSet { UserDefaults.standard.set(appliedImagePath, forKey: Keys.appliedImagePath) }
+    }
     private let ciContext = CIContext()
 
     /// Identifies the most recent image load, so a slow decode that finishes late
@@ -94,7 +104,7 @@ final class WallpaperManager: ObservableObject {
     /// Set when an apply is requested while one is already running, so the newest
     /// arrangement still gets applied once the in-flight render finishes.
     private var applyQueuedWhileBusy = false
-    private var pendingReapply: DispatchWorkItem?
+    private var pendingReapply: Task<Void, Never>?
 
     private enum Keys {
         static let lastImagePath = "lastImagePath"
@@ -103,6 +113,7 @@ final class WallpaperManager: ObservableObject {
         static let zoom = "zoom"
         static let offsetX = "offsetX"
         static let offsetY = "offsetY"
+        static let appliedImagePath = "appliedImagePath"
     }
 
     private let wallpaperOpts: [NSWorkspace.DesktopImageOptionKey: Any] = [
@@ -112,7 +123,13 @@ final class WallpaperManager: ObservableObject {
 
     init() {
         autoReapply = UserDefaults.standard.object(forKey: Keys.autoReapply) as? Bool ?? true
-        presets = PresetStore.load()
+        appliedImagePath = UserDefaults.standard.string(forKey: Keys.appliedImagePath)
+        let stored = PresetStore.load()
+        presets = stored.presets
+        if let setAside = stored.setAside {
+            setStatus("Saved presets could not be read; the file was kept as \(setAside.lastPathComponent).",
+                      error: true)
+        }
         refreshDisplays()
         NotificationCenter.default.addObserver(
             self, selector: #selector(screensChanged),
@@ -121,8 +138,8 @@ final class WallpaperManager: ObservableObject {
     }
 
     deinit {
+        // A pending re-apply holds only a weak reference, so it ends on its own.
         NotificationCenter.default.removeObserver(self)
-        pendingReapply?.cancel()
     }
 
     // MARK: - Public
@@ -142,10 +159,11 @@ final class WallpaperManager: ObservableObject {
 
         // Reading the file can block — see restoreLastSession for why — so the
         // decode stays off the main thread and the window keeps responding.
+        let context = ciContext
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // Uses the same CIImage pipeline as apply, so the preview honours EXIF
             // orientation exactly as the generated wallpaper will.
-            let decoded = self?.decodePreview(from: url)
+            let decoded = Self.decodePreview(from: url, context: context)
 
             DispatchQueue.main.async {
                 guard let self, generation == self.loadGeneration else { return }
@@ -210,11 +228,16 @@ final class WallpaperManager: ObservableObject {
         // reconfiguration's frames with the layout captured above. A
         // reconfiguration schedules its own re-apply, which sees the new state.
         let frames = orderedScreens.map(\.frame)
+        // Screens are matched up again by ID once rendering is done: an NSScreen
+        // belongs on the main thread, and a display that has gone by then is
+        // simply skipped — its removal schedules a re-apply of its own.
+        let displayIDs = orderedScreens.map(Self.displayID(of:))
         let pixelSizes = orderedScreens.map {
             CGSize(width: ($0.frame.width * $0.backingScaleFactor).rounded(),
                    height: ($0.frame.height * $0.backingScaleFactor).rounded())
         }
 
+        let context = ciContext
         isProcessing = true
         setStatus("Applying wallpaper to \(count) display\(count == 1 ? "" : "s")…", error: false)
 
@@ -233,13 +256,14 @@ final class WallpaperManager: ObservableObject {
                     aspects: pixelSizes.map { $0.width / $0.height })
                 guard crops.count == count else { throw WallpaperError.renderFailed }
 
-                let dir = try self.makeApplyDirectory()
+                let dir = try Self.makeApplyDirectory()
                 applyDir = dir
                 var renderedURLs: [URL] = []
 
                 for i in 0..<count {
                     let wURL = dir.appendingPathComponent("\(base)_Screen\(i + 1).png")
-                    try self.cropAndSave(ci: ci, cropRect: crops[i], pixelSize: pixelSizes[i], to: wURL)
+                    try Self.cropAndSave(ci: ci, cropRect: crops[i], pixelSize: pixelSizes[i],
+                                         to: wURL, context: context)
                     renderedURLs.append(wURL)
                 }
 
@@ -247,11 +271,14 @@ final class WallpaperManager: ObservableObject {
                     defer { self.finishApply() }
                     do {
                         let ws = NSWorkspace.shared
-                        for (screen, wURL) in zip(orderedScreens, renderedURLs) {
+                        let current = NSScreen.screens
+                        for (id, wURL) in zip(displayIDs, renderedURLs) {
+                            guard let id, let screen = current.first(where: { Self.displayID(of: $0) == id })
+                            else { continue }
                             try ws.setDesktopImageURL(wURL, for: screen, options: self.wallpaperOpts)
                         }
                         try self.pruneRenderedWallpapers(keeping: dir)
-                        self.hasApplied = true
+                        self.appliedImagePath = url.path
                         self.setStatus("Applied to \(count) display\(count == 1 ? "" : "s").", error: false)
                     } catch {
                         self.setStatus(error.localizedDescription, error: true)
@@ -432,8 +459,9 @@ final class WallpaperManager: ObservableObject {
         if previous.count != displayCount || previous.arrangement != layout.arrangement {
             Accessibility.announce(arrangementSummary)
         }
-        // macOS drops a spanned wallpaper when displays change; re-apply if asked.
-        if autoReapply, hasApplied, sourceURL != nil {
+        // macOS drops a spanned wallpaper when displays change; re-apply if asked,
+        // but only the image that is actually on the wall.
+        if autoReapply, let path = sourceURL?.path, path == appliedImagePath {
             scheduleReapply()
         }
     }
@@ -443,12 +471,12 @@ final class WallpaperManager: ObservableObject {
     /// apply runs against the final layout instead of one per notification.
     private func scheduleReapply() {
         pendingReapply?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.pendingReapply = nil
-            self?.applyWallpapers()
+        pendingReapply = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.pendingReapply = nil
+            self.applyWallpapers()
         }
-        pendingReapply = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
     }
 
     /// Clear the in-flight flag and run whatever was requested while we were busy.
@@ -471,17 +499,22 @@ final class WallpaperManager: ObservableObject {
         }
     }
 
-    /// The display frame the canvas should use when previewing slot `i`'s crop.
-    /// Falls back to the union box, which makes `arrangedCrop` centre the crop —
-    /// the right answer while the split count briefly outruns the known displays.
     /// Each display's extent along the split axis, in span order — what the
     /// default splits are computed from.
     private var slotSpans: [CGFloat] {
         slots.map { layout.axis == .horizontal ? $0.frame.width : $0.frame.height }
     }
 
+    /// The display frame the canvas should use when previewing slot `i`'s crop.
+    /// Falls back to the union box, which makes `arrangedCrop` centre the crop —
+    /// the right answer while the split count briefly outruns the known displays.
     func frame(forSlot i: Int) -> CGRect {
         i < slots.count ? slots[i].frame : unionBox
+    }
+
+    /// The Core Graphics display ID behind `screen`.
+    private static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 
     private func refreshDisplays() {
@@ -493,7 +526,7 @@ final class WallpaperManager: ObservableObject {
         unionBox = WallpaperGeometry.unionBox(frames)
         slots = l.order.map { idx in
             let s = screensRaw[idx]
-            let displayID = (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            let displayID = Self.displayID(of: s)
             return SpanSlot(name: s.localizedName,
                             aspect: s.frame.width / max(s.frame.height, 1),
                             frame: s.frame,
@@ -570,10 +603,11 @@ final class WallpaperManager: ObservableObject {
         // launch before the window exists, so the restore happens in the
         // background and populates the canvas once it arrives.
         let generation = loadGeneration
+        let context = ciContext
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard FileManager.default.fileExists(atPath: path),
-                  let decoded = self?.decodePreview(from: url) else { return }
+                  let decoded = Self.decodePreview(from: url, context: context) else { return }
 
             DispatchQueue.main.async {
                 // Drop the restore if the user opened something else meanwhile.
@@ -589,7 +623,11 @@ final class WallpaperManager: ObservableObject {
                 } else {
                     self.resetFractions()
                 }
-                self.setStatus("Restored: \(url.lastPathComponent)", error: false)
+                // Keep an error from launch (unreadable presets) on screen rather
+                // than replacing it with routine news.
+                if !self.isError {
+                    self.setStatus("Restored: \(url.lastPathComponent)", error: false)
+                }
             }
         }
     }
@@ -598,7 +636,8 @@ final class WallpaperManager: ObservableObject {
 
     /// The full-resolution preview image plus a flat thumbnail of it, both from
     /// the same CIImage pipeline as apply so they honour EXIF orientation alike.
-    private func decodePreview(from url: URL) -> (image: NSImage, thumbnail: CGImage?)? {
+    nonisolated private static func decodePreview(from url: URL, context: CIContext)
+        -> (image: NSImage, thumbnail: CGImage?)? {
         guard let ci = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return nil }
         let rep = NSCIImageRep(ciImage: ci)
         let image = NSImage(size: rep.size)
@@ -609,12 +648,13 @@ final class WallpaperManager: ObservableObject {
         let longSide = max(ci.extent.width, ci.extent.height)
         let scale = longSide > 0 ? min(1, 4096 / longSide) : 1
         let scaled = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let thumbnail = ciContext.createCGImage(scaled, from: scaled.extent.integral)
+        let thumbnail = context.createCGImage(scaled, from: scaled.extent.integral)
         return (image, thumbnail)
     }
 
     /// Scale `cropRect` of the source to exactly `pixelSize` and write it as a PNG.
-    private func cropAndSave(ci: CIImage, cropRect: CGRect, pixelSize: CGSize, to url: URL) throws {
+    nonisolated private static func cropAndSave(ci: CIImage, cropRect: CGRect, pixelSize: CGSize,
+                                                to url: URL, context: CIContext) throws {
         let pixelW = pixelSize.width, pixelH = pixelSize.height
         guard cropRect.width > 0, cropRect.height > 0, pixelW > 0, pixelH > 0 else {
             throw WallpaperError.renderFailed
@@ -643,7 +683,7 @@ final class WallpaperManager: ObservableObject {
         }
         let format: CIFormat = colorSpace.isWideGamutRGB ? .RGBA16 : .RGBA8
 
-        try ciContext.writePNGRepresentation(of: processed, to: url,
+        try context.writePNGRepresentation(of: processed, to: url,
                                              format: format, colorSpace: colorSpace,
                                              options: [:])
     }
@@ -655,9 +695,9 @@ final class WallpaperManager: ObservableObject {
     /// still point at an earlier apply's files, and deleting those would blank
     /// them. Keeping a few recent sets covers that without growing forever; a
     /// Space left on an older set than this falls back to the system default.
-    private static let retainedApplies = 5
+    nonisolated private static let retainedApplies = 5
 
-    private func renderedWallpapersDirectory() throws -> URL {
+    nonisolated private static func renderedWallpapersDirectory() throws -> URL {
         let dir = try AppSupport.directory().appendingPathComponent("Rendered", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
@@ -666,7 +706,7 @@ final class WallpaperManager: ObservableObject {
     /// A new folder for one apply. A fresh path each time matters: the wallpaper
     /// agent caches by URL and can ignore a set to the URL it already shows, so
     /// re-applying after moving a split would otherwise leave the old slice up.
-    private func makeApplyDirectory() throws -> URL {
+    nonisolated private static func makeApplyDirectory() throws -> URL {
         let millis = Int64(Date().timeIntervalSince1970 * 1000)
         // Zero-padded so name order is chronological order; the suffix only
         // guards against two applies landing in the same millisecond.
@@ -680,7 +720,7 @@ final class WallpaperManager: ObservableObject {
     private func pruneRenderedWallpapers(keeping current: URL) throws {
         let fileManager = FileManager.default
         let older = try fileManager
-            .contentsOfDirectory(at: renderedWallpapersDirectory(),
+            .contentsOfDirectory(at: Self.renderedWallpapersDirectory(),
                                  includingPropertiesForKeys: [.isDirectoryKey],
                                  options: [.skipsHiddenFiles])
             .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true

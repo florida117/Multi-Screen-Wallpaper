@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var showFilePicker = false
     @State private var showSavePreset = false
     @State private var presetName = ""
+    @State private var zoomKeyMonitor: Any?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -30,6 +31,11 @@ struct ContentView: View {
             }
         }
         .navigationSubtitle(displaySummary)
+        .onAppear(perform: installZoomInAlias)
+        .onDisappear {
+            if let monitor = zoomKeyMonitor { NSEvent.removeMonitor(monitor) }
+            zoomKeyMonitor = nil
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openImageRequested)) { _ in
             showFilePicker = true
         }
@@ -53,6 +59,22 @@ struct ContentView: View {
 
     private var canAdjustSplits: Bool {
         manager.sourceImage != nil && manager.layout.arrangement != .grid && !manager.isLoading
+    }
+
+    /// The Zoom In menu item shows ⌘+, but AppKit matches it only with Shift
+    /// held, since + is Shift-= on most layouts. Accept a plain ⌘= too, as
+    /// other Mac apps do, so zooming in does not need a different chord from
+    /// zooming out.
+    private func installZoomInAlias() {
+        guard zoomKeyMonitor == nil else { return }
+        zoomKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [manager] event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers == "=",
+                  manager.sourceImage != nil,
+                  manager.zoom < WallpaperManager.maxZoom else { return event }
+            manager.nudgeZoom(1.25)
+            return nil
+        }
     }
 
     // MARK: Desk
