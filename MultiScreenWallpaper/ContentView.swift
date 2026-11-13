@@ -104,7 +104,8 @@ struct ContentView: View {
     // MARK: Source
 
     private var sourceSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // No spacing: the canvas's own 10pt shadow inset separates it from the header.
+        VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(manager.sourceFileName.map { "Source · \($0)" } ?? "Source")
                     .font(.headline)
@@ -126,9 +127,12 @@ struct ContentView: View {
             // No accessibility modifiers here: the canvas builds its own AppKit
             // accessibility tree (sections and split lines), and a SwiftUI label
             // would flatten it into a single opaque element.
+            // 220 high: the canvas insets the image by 10pt on each side for its
+            // shadow, so the image itself still gets 200pt.
             CanvasView(manager: manager)
-                .frame(height: 200)
+                .frame(height: 220)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
+                .padding(.horizontal, -10)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)

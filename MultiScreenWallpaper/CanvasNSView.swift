@@ -113,23 +113,30 @@ final class CanvasNSView: NSView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        // System background when empty (respects light/dark); black once an image
-        // is loaded for clean letterboxing.
-        let background: NSColor = manager?.sourceImage != nil ? .black : .windowBackgroundColor
-        background.setFill()
-        bounds.fill()
-
         guard let image = manager?.sourceImage else {
+            // A rounded drop well over the image area when empty.
+            NSColor.windowBackgroundColor.setFill()
+            NSBezierPath(roundedRect: imageArea, xRadius: Self.cardCornerRadius,
+                         yRadius: Self.cardCornerRadius).fill()
             drawDropHint()
             drawCanvasFocusRing()
             return
         }
 
-        let drawRect = aspectFit(size: image.size, in: bounds)
-        drawPreview(of: image, in: drawRect)
+        // With an image loaded the canvas leaves its background clear, so the
+        // letterbox around the image is the source strip itself rather than a
+        // black bar, and the image sits on it as a card with a soft shadow.
+        let drawRect = aspectFit(size: image.size, in: imageArea)
+        let card = NSBezierPath(roundedRect: drawRect, xRadius: Self.cardCornerRadius,
+                                yRadius: Self.cardCornerRadius)
+        drawCardShadow(card)
 
+        NSGraphicsContext.saveGraphicsState()
+        card.addClip()
+        drawPreview(of: image, in: drawRect)
         let sections = sectionBands(in: drawRect)
         drawCropDimming(sections, in: drawRect)
+        NSGraphicsContext.restoreGraphicsState()
 
         switch manager?.layout.arrangement ?? .row {
         case .row, .column:
@@ -140,6 +147,24 @@ final class CanvasNSView: NSView {
 
         drawSectionLabels(sections)
         drawCanvasFocusRing()
+    }
+
+    private static let cardCornerRadius: CGFloat = 6
+
+    /// Where the image is fitted: the bounds, inset so the card's shadow has
+    /// room to show. Drawing and hit-testing both use this, so they agree.
+    private var imageArea: NSRect { bounds.insetBy(dx: 10, dy: 10) }
+
+    private func drawCardShadow(_ card: NSBezierPath) {
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.6)
+        shadow.shadowBlurRadius = 10
+        shadow.shadowOffset = NSSize(width: 0, height: -2)
+        shadow.set()
+        NSColor.black.setFill()
+        card.fill()
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     /// A focus ring around the whole canvas so keyboard users can see where focus
@@ -659,7 +684,7 @@ final class CanvasNSView: NSView {
 
     private func imageDrawRect() -> NSRect? {
         guard let image = manager?.sourceImage else { return nil }
-        return aspectFit(size: image.size, in: bounds)
+        return aspectFit(size: image.size, in: imageArea)
     }
 
     /// Distance from `pt` to the split line at `fraction`, along the perpendicular axis.
